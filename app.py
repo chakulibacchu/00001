@@ -304,8 +304,11 @@ def achievement_summary():
 
 
 
-@app.route('/start-day-chat', methods=['POST'])
+@app.route('/start-day-chat', methods=['POST', 'OPTIONS'])
 def start_day_chat():
+    if request.method == 'OPTIONS':
+        return '', 204  # Handle preflight
+
     data = request.get_json()
     user_id = data.get("user_id")
     day_number = data.get("day_number")
@@ -345,8 +348,13 @@ def start_day_chat():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/reply-day-chat', methods=['POST'])
+# --------- REPLY DAY CHAT ---------
+
+@app.route('/reply-day-chat', methods=['POST', 'OPTIONS'])
 def reply_day_chat():
+    if request.method == 'OPTIONS':
+        return '', 204  # Handle preflight
+
     data = request.get_json()
     user_id = data.get("user_id")
     message = data.get("message")
