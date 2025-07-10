@@ -11,7 +11,8 @@ from firebase_admin import credentials, firestore
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app, resources={r"/*": {"origins": "*"}})  # remove supports_credentials
+
 
 # 🔥 Firebase Initialization
 cred = credentials.Certificate("serviceAccountKey.json")
