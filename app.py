@@ -77,6 +77,29 @@ def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
 
 
+@app.route('/rescue-plan-chat-answers', methods=['POST'])
+def rescue_plan_chat_answers():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    task = data.get("task")
+    answers = data.get("answers")  # list of 7 answers
+
+    # ✅ Basic validation
+    if not user_id or not task or not answers or not isinstance(answers, list):
+        return jsonify({"error": "Missing or invalid data"}), 400
+
+    try:
+        # ✅ Save to Firestore
+        save_to_firebase(user_id, "rescue_chat_answers", {
+            "task": task,
+            "answers": answers
+        })
+
+        return jsonify({"status": "success", "message": "Answers saved ✅"}), 200
+
+    except Exception as e:
+        print("❌ Error saving rescue chat answers:", str(e))
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/generate-action-level-questions', methods=['POST'])
