@@ -6,17 +6,20 @@ import json
 from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 import firebase_admin
-from firebase_admin import credentials, firestore
+from firebase_admin import credentials, firestore, initialize_app
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})  # remove supports_credentials
 
+firebase_json = json.loads(os.environ["FIREBASE_CONFIG"])
 
-# 🔥 Firebase Initialization
-cred = credentials.Certificate("serviceAccountKey.json")
-firebase_admin.initialize_app(cred)
+# Initialize Firebase app with credentials from the environment
+cred = credentials.Certificate(firebase_json)
+initialize_app(cred)
+
+# Firestore client
 db = firestore.client()
 
 def save_to_firebase(user_id, category, data):
