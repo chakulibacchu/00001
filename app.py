@@ -80,6 +80,49 @@ def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
 
 
+@app.route('/support-room-question', methods=['POST'])
+def support_room_question():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    task = data.get("task", "").strip()
+    question = data.get("question", "").strip()
+
+    if not task or not question:
+        return jsonify({"error": "Missing task or question"}), 400
+
+    prompt_template = load_prompt("prompt_support_room.txt")
+    if not prompt_template:
+        return jsonify({"error": "prompt_support_room.txt not found"}), 500
+
+    prompt = (
+        prompt_template
+        .replace("<<task>>", task)
+        .replace("<<question>>", question)
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=600
+        )
+        result = response.choices[0].message.content.strip()
+
+        # Optionally: save in Firestore
+        save_to_firebase(user_id, "support_room_responses", {
+            "task": task,
+            "question": question,
+            "response": result
+        })
+
+        return jsonify({"response": result})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
 @app.route('/rescue-plan-chat-answers', methods=['POST'])
 def rescue_plan_chat_answers():
     data = request.get_json()
