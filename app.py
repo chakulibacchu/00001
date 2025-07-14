@@ -388,6 +388,7 @@ def reply_day_chat():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
 @app.route('/finalize-day-chat', methods=['POST'])
 def finalize_day_chat():
     data = request.get_json()
@@ -429,10 +430,18 @@ def finalize_day_chat():
         )
         final_output = response.choices[0].message.content.strip()
 
+        # Remove ```json or ``` wrapping from the AI response
+        cleaned_output = re.sub(r"^```(?:json)?|```$", "", final_output.strip(), flags=re.MULTILINE).strip()
+
         try:
-            parsed = json.loads(final_output)
-        except json.JSONDecodeError:
-            return jsonify({"error": "Failed to parse final JSON", "raw": final_output}), 500
+            parsed = json.loads(cleaned_output)
+        except json.JSONDecodeError as json_err:
+            return jsonify({
+                "error": "Failed to parse final JSON",
+                "raw": final_output,
+                "cleaned": cleaned_output,
+                "details": str(json_err)
+            }), 500
 
         final_data = {
             "day": day_number,
@@ -441,8 +450,9 @@ def finalize_day_chat():
 
         save_to_firebase(user_id, "custom_day_final_plans", final_data)
         return jsonify({"final_plan": parsed})
+    
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"Backend error: {str(e)}"}), 500
 
 @app.route("/get-ogplan", methods=["POST"])
 def get_ogplan():
