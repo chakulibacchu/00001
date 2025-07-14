@@ -7,6 +7,9 @@ from dotenv import load_dotenv
 from bs4 import BeautifulSoup
 import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
+import re
+
+
 
 load_dotenv()
 
