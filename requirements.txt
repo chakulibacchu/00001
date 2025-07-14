@@ -3,11 +3,9 @@ gunicorn
 requests
 flask-cors
 ollama
-transformers 
+transformers
 torch
 openai
 python-dotenv
 beautifulsoup4
 firebase-admin
-json
-jsonify
