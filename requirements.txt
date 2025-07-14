@@ -9,3 +9,5 @@ openai
 python-dotenv
 beautifulsoup4
 firebase-admin
+json
+jsonify
