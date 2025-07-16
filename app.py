@@ -80,6 +80,32 @@ def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
 
 
+@app.route("/mindpal-reward", methods=["POST"])
+def mindpal_reward_webhook():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    rewards = data.get("rewards", [])
+
+    if not user_id or not isinstance(rewards, list):
+        return jsonify({"error": "Missing user_id or rewards[]"}), 400
+
+    # 🔥 Save to: users/<user_id>/rewards/<auto_id>
+    save_to_firebase(user_id, "rewards", {
+        "source": "mindpal",
+        "rewards": rewards
+    })
+
+    # ✅ Optionally also save to local file (if still needed)
+    local_data = read_rewards()
+    local_data[user_id] = {
+        "reward_list": rewards,
+        "source": "mindpal"
+    }
+    write_rewards(local_data)
+
+    return jsonify({"status": "Reward saved successfully"}), 200
+
+
 @app.route('/support-room-question', methods=['POST'])
 def support_room_question():
     data = request.get_json()
