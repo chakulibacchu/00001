@@ -498,7 +498,7 @@ def finalize_day_chat():
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=chat_history,
             temperature=0.4,
-            max_tokens=1500
+            max_tokens=4000
         )
         final_output = response.choices[0].message.content.strip()
 
@@ -884,3 +884,4 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
