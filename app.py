@@ -24,7 +24,7 @@ cred = credentials.Certificate(firebase_json)
 initialize_app(cred)
 
 # Firestore client
-db = firestore.client()
+db = firestore.Client()
 
 def save_to_firebase(user_id, category, data):
     if not user_id:
@@ -983,6 +983,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
