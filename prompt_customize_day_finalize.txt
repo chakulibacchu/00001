@@ -58,7 +58,7 @@ Do not skip any section, even if the ogplan is missing it — generate it creati
 
 📏 Length & Depth Requirements
 
-Each section (summary, motivation, lesson, secret_hacks_and_shortcuts, tiny_daily_rituals_that_transform) must be at least 350-400 words.
+Each section (summary, motivation, lesson, secret_hacks_and_shortcuts, tiny_daily_rituals_that_transform) must be at least 800-900 words.
 
 The "tasks" array must contain at least 5 very specific, actionable tasks, each with 1–2 sentences explaining exactly how to do it.
 
