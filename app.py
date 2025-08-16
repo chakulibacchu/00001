@@ -106,6 +106,46 @@ def mindpal_reward_webhook():
     return jsonify({"status": "Reward saved successfully"}), 200
 
 
+
+from flask import Flask, request, jsonify
+from datetime import datetime, timedelta
+import json
+
+app = Flask(__name__)
+
+@app.route('/create-dated-course', methods=['POST'])
+def create_dated_course():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    final_plan = data.get("final_plan")
+    join_date_str = data.get("join_date")  # Optional: user join date in 'YYYY-MM-DD' format
+
+    if not user_id or not final_plan:
+        return jsonify({"error": "Missing required data"}), 400
+
+    try:
+        joined_date = datetime.strptime(join_date_str, "%Y-%m-%d") if join_date_str else datetime.now()
+    except Exception:
+        joined_date = datetime.now()
+
+    # Convert final_plan into a dated course
+    dated_plan = {}
+    for i, day_key in enumerate(final_plan["final_plan"], start=0):
+        date_str = (joined_date + timedelta(days=i)).strftime("%Y-%m-%d")
+        dated_plan[date_str] = final_plan["final_plan"][day_key]
+
+    # Save to Firebase
+    try:
+        save_to_firebase(user_id, "dated_courses/social_skills_101", {
+            "joined_date": joined_date.strftime("%Y-%m-%d"),
+            "lessons_by_date": dated_plan
+        })
+        return jsonify({"success": True, "dated_plan": dated_plan})
+    except Exception as e:
+        return jsonify({"error": f"Failed to save to Firebase: {str(e)}"}), 500
+
+
+
 @app.route('/support-room-question', methods=['POST'])
 def support_room_question():
     data = request.get_json()
@@ -884,4 +924,5 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
