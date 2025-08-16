@@ -8,6 +8,7 @@ from bs4 import BeautifulSoup
 import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
 import re
+from datetime import datetime, timedelta
 
 
 
@@ -123,16 +124,23 @@ def create_dated_course():
     if not user_id or not final_plan:
         return jsonify({"error": "Missing required data"}), 400
 
+    # Parse join date
     try:
         joined_date = datetime.strptime(join_date_str, "%Y-%m-%d") if join_date_str else datetime.now()
     except Exception:
         joined_date = datetime.now()
 
-    # Convert final_plan into a dated course
+    # Convert final_plan into a dated course with tasks as toggles
     dated_plan = {}
     for i, day_key in enumerate(final_plan["final_plan"], start=0):
         date_str = (joined_date + timedelta(days=i)).strftime("%Y-%m-%d")
-        dated_plan[date_str] = final_plan["final_plan"][day_key]
+        day_data = final_plan["final_plan"][day_key].copy()
+
+        # Convert tasks into toggle-ready objects
+        tasks_with_toggle = [{"task": t, "done": False} for t in day_data.get("tasks", [])]
+        day_data["tasks"] = tasks_with_toggle
+
+        dated_plan[date_str] = day_data
 
     # Save to Firebase
     try:
@@ -924,5 +932,6 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
