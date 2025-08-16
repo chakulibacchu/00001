@@ -58,7 +58,7 @@ Do not skip any section, even if the ogplan is missing it — generate it creati
 
 📏 Length & Depth Requirements
 
-Each section (summary, motivation, lesson, secret_hacks_and_shortcuts, tiny_daily_rituals_that_transform) must be at least 200-250 words, unless naturally shorter for clarity.
+Each section (summary, motivation, lesson, secret_hacks_and_shortcuts, tiny_daily_rituals_that_transform) must be at least 350-400 words.
 
 The "tasks" array must contain at least 5 very specific, actionable tasks, each with 1–2 sentences explaining exactly how to do it.
 
@@ -71,6 +71,36 @@ Avoid brevity — expand on reasoning, benefits, and how the user might feel at 
 Use vivid details that relate directly to the user’s life from user_data.
 
 Make the text immersive, specific, and personal, not generic.
+
+🧠 Customization Rules
+
+Do not use generic phrases — rewrite all advice using the user’s own context from user_data
+
+Do not ignore personal context — reference their routines, energy, priorities, and environment
+
+Do not reuse language from ogplan unless it already feels highly personal
+
+Do not skip any section, even if ogplan is missing it — generate it creatively from user_data
+
+Avoid brevity — expand on reasoning, benefits, and how the user might feel at each stage
+
+Make the text immersive, specific, and personal, not generic
+
+Always keep tone warm, kind, practical, and emotionally intelligent
+
+Every single sentence must directly tie back to the user_data provided (no filler, no “anyone could do this” advice).
+
+Reframe even common advice (like “take a break” or “stay consistent”) into user-specific terms (e.g., if the user said they have low energy in mornings → “since mornings drain you, give yourself permission to ease into tasks with lighter wins”).
+
+All suggestions must explicitly reference something from their context — routines, emotions, priorities, obstacles, or environment.
+
+If something is missing in ogplan, invent details but root them in user_data.
+
+Never reuse a phrase unless it already feels deeply personal.
+
+Each sentence should feel like it was written only for that one user.
+
+Maintain tone: warm, kind, practical, emotionally intelligent.
 
 🧠 Each section must:
 
