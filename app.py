@@ -9,7 +9,6 @@ import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
 import re
 from datetime import datetime, timedelta
-from google.cloud import firestore
 
 
 load_dotenv()
@@ -24,7 +23,7 @@ cred = credentials.Certificate(firebase_json)
 initialize_app(cred)
 
 # Firestore client
-db = firestore.Client()
+db = firestore.client()
 
 def save_to_firebase(user_id, category, data):
     if not user_id:
@@ -983,6 +982,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
