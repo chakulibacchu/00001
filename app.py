@@ -9,7 +9,7 @@ import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
 import re
 from datetime import datetime, timedelta
-
+from google.cloud import firestore
 
 
 load_dotenv()
@@ -152,6 +152,57 @@ def create_dated_course():
     except Exception as e:
         return jsonify({"error": f"Failed to save to Firebase: {str(e)}"}), 500
 
+
+@app.route('/toggle-task', methods=['POST'])
+def toggle_task():
+    data = request.get_json()
+    user_id = data.get("user_id")
+    day = data.get("day")
+    task_index = data.get("task_index")
+    completed = data.get("completed")
+
+    if user_id is None or day is None or task_index is None or completed is None:
+        return jsonify({"error": "Missing required fields"}), 400
+
+    # Reference to user's task document for the day
+    task_doc_ref = db.collection("users").document(user_id).collection("task_status").document(f"day_{day}")
+    task_doc = task_doc_ref.get()
+
+    if task_doc.exists:
+        task_data = task_doc.to_dict()
+        tasks_completed = task_data.get("tasks_completed", [])
+    else:
+        # Initialize if not exists
+        tasks_completed = []
+
+    # Ensure the tasks_completed array has enough slots
+    while len(tasks_completed) <= task_index:
+        tasks_completed.append(False)
+
+    # Update the specific task's completion
+    tasks_completed[task_index] = completed
+
+    # Save back to Firestore
+    task_doc_ref.set({
+        "tasks_completed": tasks_completed,
+        "timestamp": datetime.utcnow()
+    })
+
+    # Calculate daily progress
+    total_tasks = len(tasks_completed)
+    completed_count = sum(1 for t in tasks_completed if t)
+    daily_progress = completed_count / total_tasks if total_tasks > 0 else 0
+
+    return jsonify({
+        "day": day,
+        "task_index": task_index,
+        "completed": completed,
+        "daily_progress": daily_progress,
+        "tasks_completed": tasks_completed
+    })
+
+if __name__ == "__main__":
+    app.run(debug=True)
 
 
 @app.route('/support-room-question', methods=['POST'])
@@ -932,6 +983,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
