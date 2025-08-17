@@ -107,31 +107,32 @@ def mindpal_reward_webhook():
 
 
 
-from flask import Flask, request, jsonify
-from datetime import datetime, timedelta
-import json
 
-app = Flask(__name__)
 
 @app.route('/create-dated-course', methods=['POST'])
 def create_dated_course():
     data = request.get_json()
+    print("📥 Received payload:", data)  # Log incoming request
+
     user_id = data.get("user_id")
     final_plan = data.get("final_plan")
-    join_date_str = data.get("join_date")  # Optional: user join date in 'YYYY-MM-DD' format
+    join_date_str = data.get("join_date")  # Optional: user join date
 
     if not user_id or not final_plan:
+        print("❌ Missing required data")
         return jsonify({"error": "Missing required data"}), 400
 
     # Parse join date
     try:
         joined_date = datetime.strptime(join_date_str, "%Y-%m-%d") if join_date_str else datetime.now()
-    except Exception:
+        print("📅 Parsed join date:", joined_date)
+    except Exception as e:
+        print("⚠️ Failed to parse join date, using current date. Error:", e)
         joined_date = datetime.now()
 
-    # Convert final_plan into a dated course with tasks as toggles
+    # Convert final_plan into a dated plan
     dated_plan = {}
-    for i, day_key in enumerate(final_plan["final_plan"], start=0):
+    for i, day_key in enumerate(final_plan.get("final_plan", {}), start=0):
         date_str = (joined_date + timedelta(days=i)).strftime("%Y-%m-%d")
         day_data = final_plan["final_plan"][day_key].copy()
 
@@ -141,15 +142,26 @@ def create_dated_course():
 
         dated_plan[date_str] = day_data
 
+    print("📝 Dated plan prepared:", dated_plan)
+
     # Save to Firebase
     try:
-        save_to_firebase(user_id, "dated_courses/social_skills_101", {
+        course_id = "social_skills_101"  # You can make this dynamic
+        doc_path = f"dated_courses/{user_id}/{course_id}"
+        print("📌 Writing to Firestore at:", doc_path)
+
+        db.document(doc_path).set({
             "joined_date": joined_date.strftime("%Y-%m-%d"),
             "lessons_by_date": dated_plan
         })
+
+        print("✅ Write successful")
         return jsonify({"success": True, "dated_plan": dated_plan})
+
     except Exception as e:
+        print("❌ Failed to write to Firestore:", e)
         return jsonify({"error": f"Failed to save to Firebase: {str(e)}"}), 500
+
 
 
 @app.route('/toggle-task', methods=['POST'])
@@ -982,6 +994,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
