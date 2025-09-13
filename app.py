@@ -104,21 +104,20 @@ def chat():
 
             # Inject goal_name into the prompt
             system_prompt = prompt_template.format(goal_name=goal_name or "their personal goal")
-
             history = [{"role": "system", "content": system_prompt}]
 
         # Always reinforce goal_name context
         context_message = {
             "role": "system",
-            "content": f"Reminder: the user’s goal is {goal_name or 'their personal goal'}. "
+            "content": f"Reminder: the user’s goal/context is '{goal_name or 'their personal goal'}'. "
                        f"Keep this in mind when responding."
         }
 
-        # Build the full message list
+        # Build full message list for the AI
         messages_for_model = [history[0], context_message] + history[1:]
         messages_for_model.append({"role": "user", "content": user_message})
 
-        # Call the LLaMA model with full history + reminder
+        # Call the LLaMA model
         response = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=messages_for_model,
@@ -128,17 +127,29 @@ def chat():
 
         ai_message = response.choices[0].message.content.strip()
 
-        # Append new user + AI reply into stored history (without duplicate reminder)
+        # Check if AI provided a finalized goal (expects "Final Goal: <goal_name>" in reply)
+        final_goal = None
+        if "Final Goal:" in ai_message:
+            parts = ai_message.split("Final Goal:")
+            ai_message = parts[0].strip()  # keep conversational reply
+            final_goal = parts[1].strip()
+
+        # Append user + AI message to history
         history.append({"role": "user", "content": user_message})
         history.append({"role": "assistant", "content": ai_message})
 
-        # Save updated conversation back to Firebase
+        # Save updated conversation to Firebase
         doc_ref.set({"messages": history})
 
-        return jsonify({"reply": ai_message})
+        # Return reply + optional finalized goal
+        return jsonify({
+            "reply": ai_message,
+            "final_goal": final_goal
+        })
 
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+
 
 
 @app.route("/mindpal-reward", methods=["POST"])
@@ -1055,6 +1066,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
