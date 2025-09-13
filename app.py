@@ -79,6 +79,67 @@ def write_rewards(data):
 def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
 
+@app.route('/chat', methods=['POST'])
+def chat():
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+        user_message = data.get("message", "").strip()
+        goal_name = data.get("goal_name", "").strip()
+
+        if not user_id or not user_message:
+            return jsonify({"error": "Missing user_id or message"}), 400
+
+        # Load conversation history from Firebase
+        doc_ref = db.collection("conversations").document(user_id)
+        doc = doc_ref.get()
+
+        if doc.exists:
+            history = doc.to_dict().get("messages", [])
+        else:
+            # First time: load your prompt file as the system instruction
+            prompt_template = load_prompt("prompt_setgoal.txt")
+            if not prompt_template:
+                return jsonify({"error": "prompt_setgoal.txt not found"}), 500
+
+            # Inject goal_name into the prompt
+            system_prompt = prompt_template.format(goal_name=goal_name or "their personal goal")
+
+            history = [{"role": "system", "content": system_prompt}]
+
+        # Always reinforce goal_name context
+        context_message = {
+            "role": "system",
+            "content": f"Reminder: the user’s goal is {goal_name or 'their personal goal'}. "
+                       f"Keep this in mind when responding."
+        }
+
+        # Build the full message list
+        messages_for_model = [history[0], context_message] + history[1:]
+        messages_for_model.append({"role": "user", "content": user_message})
+
+        # Call the LLaMA model with full history + reminder
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages_for_model,
+            temperature=0.7,
+            max_tokens=300
+        )
+
+        ai_message = response.choices[0].message.content.strip()
+
+        # Append new user + AI reply into stored history (without duplicate reminder)
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": ai_message})
+
+        # Save updated conversation back to Firebase
+        doc_ref.set({"messages": history})
+
+        return jsonify({"reply": ai_message})
+
+    except Exception as e:
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+
 
 @app.route("/mindpal-reward", methods=["POST"])
 def mindpal_reward_webhook():
@@ -994,6 +1055,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
