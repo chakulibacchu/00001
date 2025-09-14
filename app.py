@@ -119,7 +119,7 @@ def chat():
 
         # Call the LLaMA model
         response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="groq/compound",
             messages=messages_for_model,
             temperature=0.7,
             max_tokens=300
@@ -745,7 +745,7 @@ def ask_questions():
 
     try:
         response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="groq/compound",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=400
@@ -782,7 +782,7 @@ def final_plan():
 
     try:
         response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="groq/compound",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
             max_tokens=7000
@@ -1066,6 +1066,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
