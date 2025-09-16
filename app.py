@@ -785,7 +785,7 @@ def final_plan():
             model="groq/compound",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
-            max_tokens=7000
+            max_tokens=9000
         )
         result = response.choices[0].message.content.strip()
 
@@ -1066,6 +1066,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
