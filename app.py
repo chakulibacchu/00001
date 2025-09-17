@@ -777,6 +777,13 @@ def final_plan():
     full_plan = []
     previous_day_json = None
 
+   api_keys = [ "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", 
+               "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",
+               "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", 
+               "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",
+               "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"
+              ]
+
     for day in range(1, 6):  # Days 1 to 5
         prompt_file = f"prompt_plan_{day:02}.txt"
         prompt_template = load_prompt(prompt_file)
@@ -785,53 +792,56 @@ def final_plan():
 
         prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
 
-        # Inject all previous days' JSONs as needed
         if previous_day_json:
-            # Replace placeholder for the immediate previous day
             prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
 
-        try:
-            response = client.chat.completions.create(
-                model="groq/compound",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.4,
-                max_tokens=8192
-            )
-            result = response.choices[0].message.content.strip()
-
+        # Attempt the API call with retries using all keys
+        attempt_success = False
+        for i in range(len(api_keys)):
+            current_key_index = (day - 1 + i) % len(api_keys)
+            client.api_key = api_keys[current_key_index]
             try:
+                response = client.chat.completions.create(
+                    model="groq/compound",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.4,
+                    max_tokens=8192
+                )
+                result = response.choices[0].message.content.strip()
                 parsed_day_plan = json.loads(result)
+                attempt_success = True
+                break  # exit retry loop if success
             except json.JSONDecodeError as json_err:
                 return jsonify({
                     "error": f"Failed to parse Day {day} as JSON: {str(json_err)}",
                     "raw_response": result
                 }), 500
+            except Exception as e:
+                # If rate limit or temporary error, try next key
+                last_exception = e
+                continue
 
-            # Save for next iteration
-            previous_day_json = parsed_day_plan
+        if not attempt_success:
+            return jsonify({"error": f"All API keys failed on Day {day}: {str(last_exception)}"}), 500
 
-            # Append to full plan
-            full_plan.append(parsed_day_plan)
+        previous_day_json = parsed_day_plan
+        full_plan.append(parsed_day_plan)
 
-            # Log per day
-            logs = read_logs()
-            logs.append({
-                "day": day,
-                "goal_name": goal_name,
-                "user_answers": user_answers,
-                "ai_plan": parsed_day_plan
-            })
-            write_logs(logs)
+        logs = read_logs()
+        logs.append({
+            "day": day,
+            "goal_name": goal_name,
+            "user_answers": user_answers,
+            "ai_plan": parsed_day_plan
+        })
+        write_logs(logs)
 
-            save_to_firebase(user_id, f"plans/day_{day}", {
-                "day": day,
-                "goal_name": goal_name,
-                "user_answers": user_answers,
-                "ai_plan": parsed_day_plan
-            })
-
-        except Exception as e:
-            return jsonify({"error": f"Unexpected error on Day {day}: {str(e)}"}), 500
+        save_to_firebase(user_id, f"plans/day_{day}", {
+            "day": day,
+            "goal_name": goal_name,
+            "user_answers": user_answers,
+            "ai_plan": parsed_day_plan
+        })
 
     return jsonify({"plan": full_plan})
 
@@ -1086,6 +1096,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
