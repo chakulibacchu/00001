@@ -192,7 +192,7 @@ Layer reinforcement: Reminders to acknowledge progress, correct mistakes positiv
 
 FORMAT INSTRUCTIONS
 
-Output ONLY valid JSON formatted as an array with exactly 1 object for Day 3
+Output ONLY valid JSON formatted as an array with exactly 1 object for Day 4
 
 Each object must contain exactly these keys:
 "day", "title", "summary", "task", "motivation", "book_quote", "secret_hacks_and_shortcuts", "self_coaching_questions", "tiny_daily_rituals_that_transform", "visual_infographic_html"
