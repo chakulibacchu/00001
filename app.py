@@ -777,12 +777,13 @@ def final_plan():
     full_plan = []
     previous_day_json = None
 
-   api_keys = [ "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", 
-               "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",
-               "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", 
-               "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",
-               "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"
-              ]
+    api_keys = [
+        "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", 
+        "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",
+        "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", 
+        "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",
+        "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"
+    ]
 
     for day in range(1, 6):  # Days 1 to 5
         prompt_file = f"prompt_plan_{day:02}.txt"
@@ -797,6 +798,7 @@ def final_plan():
 
         # Attempt the API call with retries using all keys
         attempt_success = False
+        last_exception = None
         for i in range(len(api_keys)):
             current_key_index = (day - 1 + i) % len(api_keys)
             client.api_key = api_keys[current_key_index]
@@ -817,7 +819,6 @@ def final_plan():
                     "raw_response": result
                 }), 500
             except Exception as e:
-                # If rate limit or temporary error, try next key
                 last_exception = e
                 continue
 
@@ -844,6 +845,7 @@ def final_plan():
         })
 
     return jsonify({"plan": full_plan})
+
 
 
 @app.route('/start-ai-helper', methods=['POST'])
@@ -1096,6 +1098,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
