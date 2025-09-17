@@ -774,47 +774,67 @@ def final_plan():
         [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
     )
 
-    prompt_template = load_prompt("prompt_plan.txt")
-    if not prompt_template:
-        return jsonify({"error": "prompt_plan.txt not found"}), 500
+    full_plan = []
+    previous_day_json = None
 
-    prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
+    for day in range(1, 6):  # Days 1 to 5
+        prompt_file = f"prompt_plan_{day:02}.txt"
+        prompt_template = load_prompt(prompt_file)
+        if not prompt_template:
+            return jsonify({"error": f"{prompt_file} not found"}), 500
 
-    try:
-        response = client.chat.completions.create(
-            model="groq/compound",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=8192
-        )
-        result = response.choices[0].message.content.strip()
+        prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
+
+        # Inject all previous days' JSONs as needed
+        if previous_day_json:
+            # Replace placeholder for the immediate previous day
+            prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
 
         try:
-            parsed_plan = json.loads(result)
-        except json.JSONDecodeError as json_err:
-            return jsonify({
-                "error": f"Failed to parse plan as JSON: {str(json_err)}",
-                "raw_response": result
-            }), 500
+            response = client.chat.completions.create(
+                model="groq/compound",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=8192
+            )
+            result = response.choices[0].message.content.strip()
 
-        logs = read_logs()
-        logs.append({
-            "goal_name": goal_name,
-            "user_answers": user_answers,
-            "ai_plan": parsed_plan
-        })
-        write_logs(logs)
+            try:
+                parsed_day_plan = json.loads(result)
+            except json.JSONDecodeError as json_err:
+                return jsonify({
+                    "error": f"Failed to parse Day {day} as JSON: {str(json_err)}",
+                    "raw_response": result
+                }), 500
 
-        save_to_firebase(user_id, "plans", {
-            "goal_name": goal_name,
-            "user_answers": user_answers,
-            "ai_plan": parsed_plan
-        })
+            # Save for next iteration
+            previous_day_json = parsed_day_plan
 
-        return jsonify({"plan": parsed_plan})
+            # Append to full plan
+            full_plan.append(parsed_day_plan)
 
-    except Exception as e:
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+            # Log per day
+            logs = read_logs()
+            logs.append({
+                "day": day,
+                "goal_name": goal_name,
+                "user_answers": user_answers,
+                "ai_plan": parsed_day_plan
+            })
+            write_logs(logs)
+
+            save_to_firebase(user_id, f"plans/day_{day}", {
+                "day": day,
+                "goal_name": goal_name,
+                "user_answers": user_answers,
+                "ai_plan": parsed_day_plan
+            })
+
+        except Exception as e:
+            return jsonify({"error": f"Unexpected error on Day {day}: {str(e)}"}), 500
+
+    return jsonify({"plan": full_plan})
+
 
 @app.route('/start-ai-helper', methods=['POST'])
 def start_ai_helper():
@@ -1066,6 +1086,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
