@@ -787,7 +787,6 @@ def final_plan():
     ]
 
     def generate_plan():
-        full_plan = []
         previous_day_json = None
 
         for day in range(1, 6):
@@ -833,34 +832,22 @@ def final_plan():
                 return
 
             previous_day_json = parsed_day_plan
-            full_plan.append(parsed_day_plan)
 
-            # Save logs locally
-            logs = read_logs()
-            logs.append({
-                "day": day,
-                "goal_name": goal_name,
-                "user_answers": user_answers,
-                "ai_plan": parsed_day_plan
-            })
-            write_logs(logs)
-
-            # Save to Firebase correctly (3 args, valid path)
-            save_to_firebase(user_id, f"plans/{goal_name}/days/day_{day}", {
+            # Save each day immediately to Firebase (even number of path segments)
+            save_to_firebase(user_id, f"plans/{goal_name}/days", f"day_{day}", {
                 "day": day,
                 "goal_name": goal_name,
                 "user_answers": user_answers,
                 "ai_plan": parsed_day_plan
             })
 
-            # Stream this day's result
+            # Stream this day's result immediately
             yield f"data: {json.dumps({'day': day, 'plan': parsed_day_plan})}\n\n"
 
-            # Small delay to let client process SSE
+            # Optional small delay to prevent overwhelming client
             time.sleep(0.1)
 
     return Response(generate_plan(), mimetype='text/event-stream')
-
 
 
 
@@ -1114,6 +1101,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
