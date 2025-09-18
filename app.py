@@ -760,7 +760,8 @@ def ask_questions():
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
-@app.route('/final-plan', methods=['POST'])
+from flask import Response
+
 def final_plan():
     data = request.get_json()
     goal_name = data.get("goal_name", "").strip()
@@ -774,82 +775,89 @@ def final_plan():
         [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
     )
 
-    full_plan = []
-    previous_day_json = None
-
     api_keys = [
-        "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", 
+        "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",
         "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",
-        "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", 
+        "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",
         "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",
         "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"
     ]
 
-    for day in range(1, 6):  # Days 1 → 5
-        prompt_file = f"prompt_plan_{day:02}.txt"
-        prompt_template = load_prompt(prompt_file)
-        if not prompt_template:
-            return jsonify({"error": f"{prompt_file} not found"}), 500
+    def generate_plan():
+        full_plan = []
+        previous_day_json = None
 
-        prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
+        for day in range(1, 6):
+            prompt_file = f"prompt_plan_{day:02}.txt"
+            prompt_template = load_prompt(prompt_file)
+            if not prompt_template:
+                yield jsonify({"error": f"{prompt_file} not found"}).data
+                return
 
-        if previous_day_json:
-            prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
+            prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
 
-        # --- Try API keys with retry ---
-        attempt_success = False
-        last_exception = None
-        result = None
-        parsed_day_plan = None
+            if previous_day_json:
+                prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
 
-        for key in api_keys:
-            client.api_key = key
-            try:
-                response = client.chat.completions.create(
-                    model="groq/compound",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.4,
-                    max_tokens=8192
-                )
-                result = response.choices[0].message.content.strip()
-                parsed_day_plan = json.loads(result)
-                attempt_success = True
-                break
-            except json.JSONDecodeError as json_err:
-                return jsonify({
-                    "error": f"Failed to parse Day {day} as JSON: {str(json_err)}",
-                    "raw_response": result
-                }), 500
-            except Exception as e:
-                last_exception = e
-                continue
+            attempt_success = False
+            last_exception = None
+            result = None
+            parsed_day_plan = None
 
-        if not attempt_success:
-            return jsonify({"error": f"All API keys failed on Day {day}: {str(last_exception)}"}), 500
+            for key in api_keys:
+                client.api_key = key
+                try:
+                    response = client.chat.completions.create(
+                        model="groq/compound",
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=0.4,
+                        max_tokens=4096  # increased to 4k
+                    )
+                    result = response.choices[0].message.content.strip()
+                    parsed_day_plan = json.loads(result)
+                    attempt_success = True
+                    break
+                except json.JSONDecodeError as json_err:
+                    yield jsonify({
+                        "error": f"Failed to parse Day {day} as JSON: {str(json_err)}",
+                        "raw_response": result
+                    }).data
+                    return
+                except Exception as e:
+                    last_exception = e
+                    continue
 
-        previous_day_json = parsed_day_plan
-        full_plan.append(parsed_day_plan)
+            if not attempt_success:
+                yield jsonify({"error": f"All API keys failed on Day {day}: {str(last_exception)}"}).data
+                return
 
-        # --- Save logs locally ---
-        logs = read_logs()
-        logs.append({
-            "day": day,
-            "goal_name": goal_name,
-            "user_answers": user_answers,
-            "ai_plan": parsed_day_plan
-        })
-        write_logs(logs)
+            previous_day_json = parsed_day_plan
+            full_plan.append(parsed_day_plan)
 
-        # --- FIXED FIREBASE SAVE ---
-        # Correct path: users/{user_id}/plans/{goal_name}/days/{day}
-        save_to_firebase(user_id, f"plans/{goal_name}/days/day_{day}", {
-            "day": day,
-            "goal_name": goal_name,
-            "user_answers": user_answers,
-            "ai_plan": parsed_day_plan
-        })
+            # Save logs
+            logs = read_logs()
+            logs.append({
+                "day": day,
+                "goal_name": goal_name,
+                "user_answers": user_answers,
+                "ai_plan": parsed_day_plan
+            })
+            write_logs(logs)
 
-    return jsonify({"plan": full_plan}), 200
+            # Save to Firebase
+            save_to_firebase(user_id, f"plans/{goal_name}/days", f"day_{day}", {
+                "day": day,
+                "goal_name": goal_name,
+                "user_answers": user_answers,
+                "ai_plan": parsed_day_plan
+            })
+
+            # Stream this day's result immediately
+            yield f"data: {json.dumps({'day': day, 'plan': parsed_day_plan})}\n\n"
+
+    # Return a streaming response
+    return Response(generate_plan(), mimetype='text/event-stream')
+
 
 
 
@@ -1103,6 +1111,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
