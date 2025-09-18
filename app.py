@@ -9,6 +9,8 @@ import firebase_admin
 from firebase_admin import credentials, firestore, initialize_app
 import re
 from datetime import datetime, timedelta
+import time
+
 
 
 load_dotenv()
@@ -762,7 +764,6 @@ def ask_questions():
 
 from flask import Response
 
-
 @app.route('/final-plan', methods=['POST'])
 def final_plan():
     data = request.get_json()
@@ -844,7 +845,7 @@ def final_plan():
             })
             write_logs(logs)
 
-            # Save to Firebase correctly (3 args)
+            # Save to Firebase correctly (3 args, valid path)
             save_to_firebase(user_id, f"plans/{goal_name}/days/day_{day}", {
                 "day": day,
                 "goal_name": goal_name,
@@ -855,10 +856,11 @@ def final_plan():
             # Stream this day's result
             yield f"data: {json.dumps({'day': day, 'plan': parsed_day_plan})}\n\n"
 
-            # Optional: small delay to let client process SSE
+            # Small delay to let client process SSE
             time.sleep(0.1)
 
     return Response(generate_plan(), mimetype='text/event-stream')
+
 
 
 
@@ -1112,6 +1114,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
