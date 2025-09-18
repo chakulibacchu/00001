@@ -762,6 +762,8 @@ def ask_questions():
 
 from flask import Response
 
+
+@app.route('/final-plan', methods=['POST'])
 def final_plan():
     data = request.get_json()
     goal_name = data.get("goal_name", "").strip()
@@ -1111,6 +1113,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
