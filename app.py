@@ -765,10 +765,10 @@ def final_plan():
     data = request.get_json()
     goal_name = data.get("goal_name", "").strip()
     user_answers = data.get("user_answers", [])
-    user_id = data.get("user_id")
+    user_id = data.get("user_id", "").strip()
 
-    if not goal_name or not isinstance(user_answers, list):
-        return jsonify({"error": "Missing or invalid goal_name or user_answers"}), 400
+    if not goal_name or not isinstance(user_answers, list) or not user_id:
+        return jsonify({"error": "Missing or invalid goal_name, user_answers, or user_id"}), 400
 
     formatted_answers = "\n".join(
         [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
@@ -785,7 +785,7 @@ def final_plan():
         "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"
     ]
 
-    for day in range(1, 6):  # Days 1 to 5
+    for day in range(1, 6):  # Days 1 → 5
         prompt_file = f"prompt_plan_{day:02}.txt"
         prompt_template = load_prompt(prompt_file)
         if not prompt_template:
@@ -796,12 +796,14 @@ def final_plan():
         if previous_day_json:
             prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
 
-        # Attempt the API call with retries using all keys
+        # --- Try API keys with retry ---
         attempt_success = False
         last_exception = None
-        for i in range(len(api_keys)):
-            current_key_index = (day - 1 + i) % len(api_keys)
-            client.api_key = api_keys[current_key_index]
+        result = None
+        parsed_day_plan = None
+
+        for key in api_keys:
+            client.api_key = key
             try:
                 response = client.chat.completions.create(
                     model="groq/compound",
@@ -812,7 +814,7 @@ def final_plan():
                 result = response.choices[0].message.content.strip()
                 parsed_day_plan = json.loads(result)
                 attempt_success = True
-                break  # exit retry loop if success
+                break
             except json.JSONDecodeError as json_err:
                 return jsonify({
                     "error": f"Failed to parse Day {day} as JSON: {str(json_err)}",
@@ -828,6 +830,7 @@ def final_plan():
         previous_day_json = parsed_day_plan
         full_plan.append(parsed_day_plan)
 
+        # --- Save logs locally ---
         logs = read_logs()
         logs.append({
             "day": day,
@@ -837,14 +840,16 @@ def final_plan():
         })
         write_logs(logs)
 
-        save_to_firebase(user_id, f"plans/day_{day}", {
+        # --- FIXED FIREBASE SAVE ---
+        # Correct path: users/{user_id}/plans/{goal_name}/days/{day}
+        save_to_firebase(user_id, f"plans/{goal_name}/days/day_{day}", {
             "day": day,
             "goal_name": goal_name,
             "user_answers": user_answers,
             "ai_plan": parsed_day_plan
         })
 
-    return jsonify({"plan": full_plan})
+    return jsonify({"plan": full_plan}), 200
 
 
 
@@ -1098,6 +1103,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
