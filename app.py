@@ -27,14 +27,18 @@ initialize_app(cred)
 # Firestore client
 db = firestore.client()
 
-def save_to_firebase(user_id, category, data):
+def save_to_firebase(user_id, category, doc_id, data):
+    """
+    Save a document under users/{user_id}/{category}/{doc_id}.
+    """
     if not user_id:
         return
     try:
-        doc_ref = db.collection("users").document(user_id).collection(category).document()
+        doc_ref = db.collection("users").document(user_id).collection(category).document(doc_id)
         doc_ref.set(data)
     except Exception as e:
         print(f"[FIREBASE ERROR] {e}")
+
 
 client = OpenAI(
     api_key=os.environ.get("GROQ_API_KEY"),
@@ -820,7 +824,7 @@ def final_plan():
                     parsed_day_plan = json.loads(result)
                     attempt_success = True
                     break
-                except json.JSONDecodeError as json_err:
+                except json.JSONDecodeError:
                     yield f"data: {json.dumps({'error': f'Failed to parse Day {day} as JSON', 'raw_response': result})}\n\n"
                     return
                 except Exception as e:
@@ -833,21 +837,30 @@ def final_plan():
 
             previous_day_json = parsed_day_plan
 
-            # Save each day immediately to Firebase (even number of path segments)
-            save_to_firebase(user_id, f"plans/{goal_name}/days", f"day_{day}", {
-                "day": day,
-                "goal_name": goal_name,
-                "user_answers": user_answers,
-                "ai_plan": parsed_day_plan
-            })
+            # ✅ Save each day to Firebase directly (no local logs)
+            try:
+                save_to_firebase(
+                    user_id,
+                    f"plans/{goal_name}/days",
+                    doc_id=f"day_{day}",
+                    data={
+                        "day": day,
+                        "goal_name": goal_name,
+                        "user_answers": user_answers,
+                        "ai_plan": parsed_day_plan
+                    }
+                )
+            except Exception as e:
+                yield f"data: {json.dumps({'warning': f'Failed to save Day {day} to Firebase', 'exception': str(e)})}\n\n"
 
             # Stream this day's result immediately
             yield f"data: {json.dumps({'day': day, 'plan': parsed_day_plan})}\n\n"
 
-            # Optional small delay to prevent overwhelming client
+            # Optional small delay
             time.sleep(0.1)
 
     return Response(generate_plan(), mimetype='text/event-stream')
+
 
 
 
@@ -1101,6 +1114,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
