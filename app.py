@@ -768,100 +768,94 @@ def ask_questions():
 
 from flask import Response
 
-@app.route('/final-plan', methods=['POST'])
-def final_plan():
-    data = request.get_json()
-    goal_name = data.get("goal_name", "").strip()
-    user_answers = data.get("user_answers", [])
-    user_id = data.get("user_id", "").strip()
+def create_day_endpoint(day):
+    @app.route(f'/final-plan-day{day}', methods=['POST'])
+    def final_plan_day():
+        data = request.get_json()
+        goal_name = data.get("goal_name", "").strip()
+        user_answers = data.get("user_answers", [])
+        user_id = data.get("user_id", "").strip()
 
-    if not goal_name or not isinstance(user_answers, list) or not user_id:
-        return jsonify({"error": "Missing or invalid goal_name, user_answers, or user_id"}), 400
+        if not goal_name or not isinstance(user_answers, list) or not user_id:
+            return jsonify({"error": "Missing or invalid goal_name, user_answers, or user_id"}), 400
 
-    formatted_answers = "\n".join(
-        [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
-    )
+        formatted_answers = "\n".join(
+            [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
+        )
 
-    api_keys = [
-        "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",
-        "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",
-        "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",
-        "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",
-        "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"
-    ]
+        api_keys = [
+            # Groq keys
+             "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",
+             "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",
+             "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",
+             "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",
+            "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",
+            # OpenRouter key (last key)
+            "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"
+        ]
 
-    def generate_plan():
         previous_day_json = None
-
-        for day in range(1, 6):
-            prompt_file = f"prompt_plan_{day:02}.txt"
-            prompt_template = load_prompt(prompt_file)
-            if not prompt_template:
-                yield f"data: {json.dumps({'error': f'{prompt_file} not found'})}\n\n"
-                return
-
-            prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
-
-            if previous_day_json:
-                prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
-
-            attempt_success = False
-            last_exception = None
-            result = None
-            parsed_day_plan = None
-
-            # Retry all API keys sequentially
-            for key in api_keys:
-                client.api_key = key
-                try:
-                    response = client.chat.completions.create(
-                        model="groq/compound",
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.4,
-                        max_tokens=4096
-                    )
-                    result = response.choices[0].message.content.strip()
-                    parsed_day_plan = json.loads(result)
-                    attempt_success = True
-                    break
-                except json.JSONDecodeError:
-                    yield f"data: {json.dumps({'error': f'Failed to parse Day {day} as JSON', 'raw_response': result})}\n\n"
-                    return
-                except Exception as e:
-                    last_exception = e
-                    continue
-
-            if not attempt_success:
-                yield f"data: {json.dumps({'error': f'All API keys failed on Day {day}', 'exception': str(last_exception)})}\n\n"
-                return
-
-            previous_day_json = parsed_day_plan
-
-            # ✅ Save each day to Firebase directly (no local logs)
+        if day > 1:
             try:
-                save_to_firebase(
-                    user_id,
-                    f"plans/{goal_name}/days",
-                    doc_id=f"day_{day}",
-                    data={
-                        "day": day,
-                        "goal_name": goal_name,
-                        "user_answers": user_answers,
-                        "ai_plan": parsed_day_plan
-                    }
+                previous_day_json = load_from_firebase(user_id, f"plans/{goal_name}/days", f"day_{day-1}")
+            except:
+                previous_day_json = None
+
+        prompt_file = f"prompt_plan_{day:02}.txt"
+        prompt_template = load_prompt(prompt_file)
+        if not prompt_template:
+            return jsonify({"error": f"{prompt_file} not found"}), 404
+
+        prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
+        if previous_day_json:
+            prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
+
+        attempt_success = False
+        last_exception = None
+        result = None
+        parsed_day_plan = None
+
+        for idx, key in enumerate(api_keys):
+            client.api_key = key
+            model_to_use = "groq/compound" if idx < len(api_keys) - 1 else "alibaba/tongyi-deepresearch-30b-a3b"
+            try:
+                response = client.chat.completions.create(
+                    model=model_to_use,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.4,
+                    max_tokens=4096
                 )
+                result = response.choices[0].message.content.strip()
+                parsed_day_plan = json.loads(result)
+                attempt_success = True
+                break
+            except json.JSONDecodeError:
+                return jsonify({"error": f"Failed to parse Day {day} as JSON", "raw_response": result}), 500
             except Exception as e:
-                yield f"data: {json.dumps({'warning': f'Failed to save Day {day} to Firebase', 'exception': str(e)})}\n\n"
+                last_exception = e
+                continue
 
-            # Stream this day's result immediately
-            yield f"data: {json.dumps({'day': day, 'plan': parsed_day_plan})}\n\n"
+        if not attempt_success:
+            return jsonify({"error": f"All API keys failed on Day {day}", "exception": str(last_exception)}), 500
 
-            # Optional small delay
-            time.sleep(0.1)
+        # Save to Firebase
+        save_to_firebase(
+            user_id,
+            f"plans/{goal_name}/days",
+            doc_id=f"day_{day}",
+            data={
+                "day": day,
+                "goal_name": goal_name,
+                "user_answers": user_answers,
+                "ai_plan": parsed_day_plan
+            }
+        )
 
-    return Response(generate_plan(), mimetype='text/event-stream')
+        return jsonify({"day": day, "plan": parsed_day_plan})
 
-
+# Create endpoints for Day 1 → Day 5
+for i in range(1, 6):
+    create_day_endpoint(i)
 
 
 @app.route('/start-ai-helper', methods=['POST'])
@@ -1114,6 +1108,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
