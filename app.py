@@ -769,8 +769,11 @@ def ask_questions():
 from flask import Response
 
 def create_day_endpoint(day):
-    @app.route(f'/final-plan-day{day}', methods=['POST'])
-    def final_plan_day():
+    endpoint_name = f"final_plan_day_{day}"  # Unique Flask endpoint name
+    route_path = f"/final-plan-day{day}"
+
+    @app.route(route_path, methods=['POST'], endpoint=endpoint_name)
+    def final_plan_day_func():
         data = request.get_json()
         goal_name = data.get("goal_name", "").strip()
         user_answers = data.get("user_answers", [])
@@ -785,10 +788,10 @@ def create_day_endpoint(day):
 
         api_keys = [
             # Groq keys
-             "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",
-             "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",
-             "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",
-             "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",
+            "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",
+            "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",
+            "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",
+            "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",
             "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",
             # OpenRouter key (last key)
             "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"
@@ -856,6 +859,7 @@ def create_day_endpoint(day):
 # Create endpoints for Day 1 → Day 5
 for i in range(1, 6):
     create_day_endpoint(i)
+
 
 
 @app.route('/start-ai-helper', methods=['POST'])
@@ -1108,6 +1112,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
