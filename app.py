@@ -96,6 +96,17 @@ def chat():
         if not user_id or not user_message:
             return jsonify({"error": "Missing user_id or message"}), 400
 
+        # Get API key from Authorization header
+        api_key = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            api_key = auth_header[len("Bearer "):].strip()
+        if not api_key:
+            return jsonify({"error": "Missing API key in Authorization header"}), 401
+
+        # Initialize client with provided API key
+        client.api_key = api_key
+
         # Load conversation history from Firebase
         doc_ref = db.collection("conversations").document(user_id)
         doc = doc_ref.get()
@@ -123,7 +134,7 @@ def chat():
         messages_for_model = [history[0], context_message] + history[1:]
         messages_for_model.append({"role": "user", "content": user_message})
 
-        # Call the LLaMA model
+        # Call the LLaMA / Groq model
         response = client.chat.completions.create(
             model="groq/compound",
             messages=messages_for_model,
@@ -155,6 +166,7 @@ def chat():
 
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+
 
 
 
@@ -1095,6 +1107,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
