@@ -786,16 +786,12 @@ def create_day_endpoint(day):
             [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
         )
 
-        api_keys = [
-            # Groq keys
-            "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",
-            "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",
-            "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",
-            "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",
-            "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",
-            # OpenRouter key (last key)
-            "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"
-        ]
+        # Read API key from Authorization header
+        api_key = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not api_key:
+            return jsonify({"error": "Missing API key in Authorization header"}), 401
+
+        client.api_key = api_key
 
         previous_day_json = None
         if day > 1:
@@ -813,33 +809,19 @@ def create_day_endpoint(day):
         if previous_day_json:
             prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
 
-        attempt_success = False
-        last_exception = None
-        result = None
-        parsed_day_plan = None
-
-        for idx, key in enumerate(api_keys):
-            client.api_key = key
-            model_to_use = "groq/compound" if idx < len(api_keys) - 1 else "alibaba/tongyi-deepresearch-30b-a3b"
-            try:
-                response = client.chat.completions.create(
-                    model=model_to_use,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.4,
-                    max_tokens=4096
-                )
-                result = response.choices[0].message.content.strip()
-                parsed_day_plan = json.loads(result)
-                attempt_success = True
-                break
-            except json.JSONDecodeError:
-                return jsonify({"error": f"Failed to parse Day {day} as JSON", "raw_response": result}), 500
-            except Exception as e:
-                last_exception = e
-                continue
-
-        if not attempt_success:
-            return jsonify({"error": f"All API keys failed on Day {day}", "exception": str(last_exception)}), 500
+        try:
+            response = client.chat.completions.create(
+                model="groq/compound",  # or any model you want to use
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.4,
+                max_tokens=4096
+            )
+            result = response.choices[0].message.content.strip()
+            parsed_day_plan = json.loads(result)
+        except json.JSONDecodeError:
+            return jsonify({"error": f"Failed to parse Day {day} as JSON", "raw_response": result}), 500
+        except Exception as e:
+            return jsonify({"error": f"API request failed", "exception": str(e)}), 500
 
         # Save to Firebase
         save_to_firebase(
@@ -859,6 +841,7 @@ def create_day_endpoint(day):
 # Create endpoints for Day 1 → Day 5
 for i in range(1, 6):
     create_day_endpoint(i)
+
 
 
 
@@ -1112,6 +1095,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
