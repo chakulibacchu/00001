@@ -779,81 +779,119 @@ def ask_questions():
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 from flask import Response
-
 def create_day_endpoint(day):
     endpoint_name = f"final_plan_day_{day}"  # Unique Flask endpoint name
     route_path = f"/final-plan-day{day}"
-
+    
     @app.route(route_path, methods=['POST'], endpoint=endpoint_name)
     def final_plan_day_func():
         data = request.get_json()
         goal_name = data.get("goal_name", "").strip()
         user_answers = data.get("user_answers", [])
         user_id = data.get("user_id", "").strip()
-
+        join_date_str = data.get("join_date")  # Optional: user join date
+        
         if not goal_name or not isinstance(user_answers, list) or not user_id:
             return jsonify({"error": "Missing or invalid goal_name, user_answers, or user_id"}), 400
-
+        
+        # Parse join date
+        try:
+            joined_date = datetime.strptime(join_date_str, "%Y-%m-%d") if join_date_str else datetime.now()
+        except Exception as e:
+            joined_date = datetime.now()
+        
         formatted_answers = "\n".join(
             [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
         )
-
+        
         # Read API key from Authorization header
         api_key = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
         if not api_key:
             return jsonify({"error": "Missing API key in Authorization header"}), 401
-
+        
         client.api_key = api_key
-
+        
+        # STEP 1: Load previous day if needed
         previous_day_json = None
         if day > 1:
             try:
-                previous_day_json = load_from_firebase(user_id, f"plans/{goal_name}/days", f"day_{day-1}")
+                previous_day_json = load_from_firebase(user_id, f"users/{user_id}/datedcourses", f"day_{day-1}")
+                # Extract the ai_plan if it exists
+                if previous_day_json and "ai_plan" in previous_day_json:
+                    previous_day_json = previous_day_json["ai_plan"]
             except:
                 previous_day_json = None
-
+        
+        # STEP 2: Load prompt template
         prompt_file = f"prompt_plan_{day:02}.txt"
         prompt_template = load_prompt(prompt_file)
         if not prompt_template:
             return jsonify({"error": f"{prompt_file} not found"}), 404
-
+        
+        # Replace placeholders
         prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
         if previous_day_json:
             prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_json))
-
+        
+        # STEP 3: Generate plan using AI
         try:
             response = client.chat.completions.create(
-                model="groq/compound",  # or any model you want to use
+                model="groq/compound",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,
                 max_tokens=4096
             )
             result = response.choices[0].message.content.strip()
             parsed_day_plan = json.loads(result)
+            print(f"✅ Day {day} plan generated from AI")
         except json.JSONDecodeError:
             return jsonify({"error": f"Failed to parse Day {day} as JSON", "raw_response": result}), 500
         except Exception as e:
             return jsonify({"error": f"API request failed", "exception": str(e)}), 500
-
-        # Save to Firebase
-        save_to_firebase(
-            user_id,
-            f"plans/{goal_name}/days",
-            doc_id=f"day_{day}",
-            data={
-                "day": day,
-                "goal_name": goal_name,
-                "user_answers": user_answers,
-                "ai_plan": parsed_day_plan
-            }
-        )
-
-        return jsonify({"day": day, "plan": parsed_day_plan})
+        
+        # STEP 4: Convert to dated format with task toggles
+        date_str = (joined_date + timedelta(days=day-1)).strftime("%Y-%m-%d")
+        day_data_dated = parsed_day_plan.copy()
+        
+        # Convert tasks array into toggle-ready objects
+        if "tasks" in day_data_dated and isinstance(day_data_dated["tasks"], list):
+            tasks_with_toggle = [{"task": t, "done": False} for t in day_data_dated["tasks"]]
+            day_data_dated["tasks"] = tasks_with_toggle
+        
+        print(f"✅ Day {day} converted to dated format with date: {date_str}")
+        
+        # STEP 5: Store to Firebase at users/{uid}/datedcourses/day_{N}
+        course_id = goal_name.lower().replace(" ", "_")
+        try:
+            save_to_firebase(
+                user_id,
+                f"users/{user_id}/datedcourses",
+                doc_id=f"day_{day}",
+                data={
+                    "day": day,
+                    "date": date_str,
+                    "goal_name": goal_name,
+                    "course_id": course_id,
+                    "user_answers": user_answers,
+                    "joined_date": joined_date.strftime("%Y-%m-%d"),
+                    "ai_plan": day_data_dated,
+                    "created_at": datetime.now().isoformat()
+                }
+            )
+            print(f"✅ Day {day} stored in Firebase at users/{user_id}/datedcourses/day_{day}")
+        except Exception as e:
+            return jsonify({"error": f"Failed to save to Firebase", "exception": str(e)}), 500
+        
+        return jsonify({
+            "success": True,
+            "day": day,
+            "date": date_str,
+            "plan": day_data_dated
+        })
 
 # Create endpoints for Day 1 → Day 5
 for i in range(1, 6):
     create_day_endpoint(i)
-
 
 
 
@@ -1107,6 +1145,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
