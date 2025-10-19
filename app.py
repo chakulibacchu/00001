@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 from openai import OpenAI
 import os
 import json
@@ -91,6 +91,152 @@ def write_rewards(data):
 @app.route('/')
 def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
+
+@app.route('/anxiety-chat', methods=['POST', 'OPTIONS'])
+def anxiety_chat():
+    if request.method == 'OPTIONS':
+        return '', 204  # Handle preflight
+
+    try:
+        data = request.get_json()
+        user_id = data.get("user_id")
+        conversation_id = data.get("conversation_id")
+        message_type = data.get("message_type")
+        context = data.get("context", {})
+        user_input = context.get("user_input", "")
+        
+        if not user_id or not conversation_id or not message_type:
+            return jsonify({"error": "Missing required fields"}), 400
+
+        # Get API key from Authorization header
+        api_key = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            api_key = auth_header[len("Bearer "):].strip()
+        if not api_key:
+            return jsonify({"error": "Missing API key in Authorization header"}), 401
+
+        # Initialize client with provided API key
+        client.api_key = api_key
+
+        # Load conversation history from Firebase
+        doc_ref = db.collection("anxiety_conversations").document(conversation_id)
+        doc = doc_ref.get()
+
+        if doc.exists:
+            history = doc.to_dict().get("messages", [])
+        else:
+            # First time: load the anxiety reduction prompt
+            try:
+                with open("prompt_anxiety_reduction.txt", "r") as f:
+                    system_prompt = f.read()
+            except FileNotFoundError:
+                return jsonify({"error": "prompt_anxiety_reduction.txt not found"}), 500
+            
+            history = [{"role": "system", "content": system_prompt}]
+
+        # Build context-aware message based on message_type
+        if message_type == "greeting":
+            user_message = f"I'm about to have a {context.get('task', {}).get('type', 'social')} interaction. I'm feeling anxious."
+        
+        elif message_type == "exercise_recommendation":
+            user_state = context.get('user_state', {})
+            user_message = f"""Based on my current state:
+- Anxiety level: {user_state.get('anxietyLevel', 3)}/5
+- Energy level: {user_state.get('energyLevel', 3)}/5
+- Main worry: {user_state.get('worry', 'unknown')}
+- Interaction type: {context.get('task', {}).get('type', 'unknown')}
+
+What exercises should I do to prepare? Respond with a supportive message and suggest exercises from: grounding, breathing, ai-chat, self-talk, physical."""
+        
+        elif message_type == "motivation":
+            exercises_completed = context.get('exercise_history', [])
+            user_message = f"I just completed {len(exercises_completed)} exercise(s): {', '.join(exercises_completed)}. Give me encouraging feedback!"
+        
+        elif message_type == "self_talk_generation":
+            user_state = context.get('user_state', {})
+            user_message = f"""Generate 4 personalized positive affirmations for someone who:
+- Has anxiety level {user_state.get('anxietyLevel', 3)}/5
+- Main worry: {user_state.get('worry', 'unknown')}
+- About to have a {context.get('task', {}).get('type', 'social')} interaction
+
+Format: Return ONLY a JSON array of 4 strings, nothing else."""
+        
+        elif message_type == "reflection_prompt":
+            user_message = "I've completed my preparation exercises. Help me reflect on what I accomplished."
+        
+        elif message_type == "reflection_analysis":
+            reflection = context.get('reflection', {})
+            user_message = f"""I just reflected on my preparation:
+- Anxiety before: {context.get('user_state', {}).get('anxietyLevel', 3)}/5
+- Anxiety after: {reflection.get('finalAnxiety', 3)}/5
+- Confidence: {reflection.get('finalConfidence', 3)}/5
+- Exercises helped: {reflection.get('exercisesHelped', 'unknown')}
+
+Give me encouraging analysis of my progress!"""
+        
+        elif message_type == "emergency_followup":
+            user_message = "I just did a 60-second emergency breathing reset. Check in on me."
+        
+        elif message_type == "user_message":
+            user_message = user_input
+        
+        else:
+            user_message = user_input or "Help me with my anxiety."
+
+        # Append user message to history
+        history.append({"role": "user", "content": user_message})
+
+        # Call the AI model
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=history,
+            temperature=0.7 if message_type == "user_message" else 0.6,
+            max_tokens=500 if message_type == "user_message" else 300
+        )
+
+        ai_reply = response.choices[0].message.content.strip()
+
+        # Handle self-talk generation specially (extract JSON)
+        suggestions = None
+        if message_type == "self_talk_generation":
+            try:
+                import json
+                # Try to extract JSON array from response
+                if "[" in ai_reply and "]" in ai_reply:
+                    json_start = ai_reply.index("[")
+                    json_end = ai_reply.rindex("]") + 1
+                    suggestions = json.loads(ai_reply[json_start:json_end])
+                else:
+                    # Fallback: split by newlines or bullets
+                    suggestions = [line.strip("- •") for line in ai_reply.split("\n") if line.strip()][:4]
+            except:
+                suggestions = [
+                    "I am capable and prepared.",
+                    "It's okay to feel nervous.",
+                    "I've handled situations like this before.",
+                    "One step at a time is enough."
+                ]
+
+        # Append AI response to history
+        history.append({"role": "assistant", "content": ai_reply})
+
+        # Save updated conversation to Firebase
+        doc_ref.set({
+            "messages": history,
+            "user_id": user_id,
+            "last_updated": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+
+        # Return response
+        response_data = {"response": ai_reply}
+        if suggestions:
+            response_data["suggestions"] = suggestions
+
+        return jsonify(response_data)
+
+    except Exception as e:
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 @app.route('/reply-day-chat-advanced', methods=['POST', 'OPTIONS'])
 def reply_day_chat_advanced():
@@ -1441,6 +1587,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
