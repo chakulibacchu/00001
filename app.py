@@ -1,5 +1,5 @@
-from flask import Flask, request, jsonify      
-from flask_cors import CORS, cross_origin
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 from openai import OpenAI
 import os
 import json
@@ -11,18 +11,25 @@ import re
 from datetime import datetime, timedelta
 import time
 
-
-
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # remove supports_credentials
+CORS(app, resources={r"/*": {"origins": "*"}})  # CORS for all origins
 
-firebase_json = json.loads(os.environ["FIREBASE_CONFIG"])
+# Load Firebase config from environment variable
+firebase_config_json = os.environ.get("FIREBASE_CONFIG")
+if not firebase_config_json:
+    raise EnvironmentError("FIREBASE_CONFIG environment variable not set")
 
-# Initialize Firebase app with credentials from the environment
-cred = credentials.Certificate(firebase_json)
-initialize_app(cred)
+try:
+    firebase_json = json.loads(firebase_config_json)
+except json.JSONDecodeError:
+    raise ValueError("FIREBASE_CONFIG is not valid JSON")
+
+# Initialize Firebase app
+if not firebase_admin._apps:
+    cred = credentials.Certificate(firebase_json)
+    initialize_app(cred)
 
 # Firestore client
 db = firestore.client()
@@ -1454,6 +1461,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
