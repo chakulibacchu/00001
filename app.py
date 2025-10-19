@@ -937,26 +937,6 @@ def ask_questions():
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
-from flask import Response
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import firebase_admin
-from firebase_admin import credentials, firestore
-from datetime import datetime, timedelta
-import json
-import os
-from openai import OpenAI
-
-app = Flask(__name__)
-CORS(app)
-
-# Initialize Firebase
-cred = credentials.Certificate('path/to/serviceAccountKey.json')
-firebase_admin.initialize_app(cred)
-db = firestore.client()
-
-# Initialize OpenAI client (will be updated per request)
-client = OpenAI()
 
 # ============ HELPER FUNCTIONS ============
 
@@ -1461,6 +1441,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
