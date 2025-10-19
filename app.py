@@ -84,7 +84,6 @@ def write_rewards(data):
 @app.route('/')
 def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
-
 @app.route('/reply-day-chat-advanced', methods=['POST', 'OPTIONS'])
 def reply_day_chat_advanced():
     if request.method == 'OPTIONS':
@@ -100,8 +99,10 @@ def reply_day_chat_advanced():
     if not user_id or not message:
         return jsonify({"error": "Missing input"}), 400
 
+    user_ref = db.collection("users").document(user_id)
+
     # Fetch latest chat for the day
-    chats = db.collection("users").document(user_id).collection("custom_day_chat")
+    chats = user_ref.collection("custom_day_chat")
     docs = list(chats.order_by("day", direction=firestore.Query.DESCENDING).limit(1).stream())
     if not docs:
         return jsonify({"error": "Chat not started"}), 404
@@ -109,7 +110,7 @@ def reply_day_chat_advanced():
     doc_ref = docs[0].reference
     chat_data = docs[0].to_dict()
     chat_history = chat_data.get("chat", [])
-
+    
     # Append user message
     chat_history.append({"role": "user", "content": message})
 
@@ -120,20 +121,28 @@ def reply_day_chat_advanced():
     except FileNotFoundError:
         return jsonify({"error": "prompt_DAYONE_COMPONENTONE not found"}), 500
 
-    # Inject user-specific info into the prompt
+    # Fetch existing condensed profile from users/<uid>/condensed_profile
+    profile_doc = user_ref.get()
+    condensed_profile = profile_doc.to_dict().get("condensed_profile", "User profile not yet created.")
+
+    # Prepare system prompt with profile
     system_prompt = prompt_template.format(
         goal_name=goal_name or "their personal goal",
         user_places=", ".join(user_places) if user_places else "none",
-        user_interests=", ".join(user_interests) if user_interests else "none"
+        user_interests=", ".join(user_interests) if user_interests else "none",
+        condensed_profile=condensed_profile
     )
 
-    # Add system context
     context_message = {"role": "system", "content": system_prompt}
 
-    # Prepare messages for model
-    messages_for_model = [chat_history[0]] + [context_message] + chat_history[1:]
+    # Prepare messages: last user message + system context
+    messages_for_model = [
+        {"role": "user", "content": message},
+        context_message
+    ]
 
     try:
+        # Generate assistant reply
         response = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=messages_for_model,
@@ -142,14 +151,77 @@ def reply_day_chat_advanced():
         )
         reply = response.choices[0].message.content.strip()
 
-        # Append AI response and save
+        # Append AI response to chat
         chat_history.append({"role": "assistant", "content": reply})
         doc_ref.update({"chat": chat_history})
 
-        return jsonify({"reply": reply})
+        # Generate updated condensed profile
+        profile_prompt = f"Update the condensed user profile based on this latest message:\n\nCurrent profile:\n{condensed_profile}\n\nLatest user message:\n{message}\n\nReturn the updated profile in a short structured format."
+        profile_response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{"role": "user", "content": profile_prompt}],
+            temperature=0.5,
+            max_tokens=300
+        )
+        new_condensed_profile = profile_response.choices[0].message.content.strip()
+
+        # Save condensed profile under users/<uid>/condensed_profile
+        user_ref.update({"condensed_profile": new_condensed_profile})
+
+        return jsonify({"reply": reply, "condensed_profile": new_condensed_profile})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+  @app.route('/generate-user-places', methods=['POST', 'OPTIONS'])
+def generate_user_places():
+    if request.method == 'OPTIONS':
+        return '', 204  # Handle preflight
+
+    data = request.get_json()
+    user_id = data.get("user_id")
+
+    if not user_id:
+        return jsonify({"error": "Missing user_id"}), 400
+
+    user_ref = db.collection("users").document(user_id)
+
+    # Fetch condensed profile
+    profile_doc = user_ref.get()
+    if not profile_doc.exists:
+        return jsonify({"error": "User not found"}), 404
+
+    condensed_profile = profile_doc.to_dict().get("condensed_profile")
+    if not condensed_profile:
+        return jsonify({"error": "No condensed profile found"}), 404
+
+    # Load prompt from file
+    try:
+        with open("prompt_location.txt", "r") as f:
+            prompt_template = f.read()
+    except FileNotFoundError:
+        return jsonify({"error": "prompt_location.txt not found"}), 500
+
+    # Inject condensed profile into prompt
+    places_prompt = prompt_template.format(condensed_profile=condensed_profile)
+
+    try:
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{"role": "user", "content": places_prompt}],
+            temperature=0.7,
+            max_tokens=800
+        )
+        places_output = response.choices[0].message.content.strip()
+
+        # Save generated places
+        user_ref.update({"suggested_places": places_output})
+
+        return jsonify({"places": places_output})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/chat', methods=['POST'])
@@ -1369,6 +1441,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
