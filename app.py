@@ -88,6 +88,259 @@ def write_rewards(data):
     with open(REWARD_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
+
+@app.route('/api/generate-briefing', methods=['POST', 'OPTIONS'])
+def generate_briefing():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    data = request.get_json()
+    user_id = data.get("user_id")
+    location = data.get("location", "").strip()
+    time = data.get("time", "").strip()
+    energy_level = data.get("energy_level", 3)
+    confidence_level = data.get("confidence_level", 3)
+    user_history = data.get("user_history", {})
+    
+    # Validation
+    if not user_id or not location or not time:
+        return jsonify({"error": "Missing required fields: user_id, location, time"}), 400
+    
+    try:
+        # Fetch user's condensed profile for personalization
+        user_doc = db.collection("users").document(user_id).get()
+        if not user_doc.exists:
+            return jsonify({"error": "User not found"}), 404
+        
+        condensed_profile = user_doc.to_dict().get("condensed_profile", "")
+        
+        # Load prompt template
+        try:
+            with open("prompt_mission_briefing.txt", "r") as f:
+                briefing_prompt_template = f.read()
+        except FileNotFoundError:
+            return jsonify({"error": "prompt_mission_briefing.txt not found"}), 500
+        
+        # Build system prompt with user context
+        system_prompt = briefing_prompt_template.format(
+            location=location,
+            time=time,
+            energy_level=energy_level,
+            confidence_level=confidence_level,
+            condensed_profile=condensed_profile,
+            user_history=json.dumps(user_history)
+        )
+        
+        # Call LLM to generate briefing
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2000
+        )
+        
+        briefing_text = response.choices[0].message.content.strip()
+        
+        # Parse the response into structured format
+        briefing_data = parse_briefing_response(briefing_text)
+        
+        # Save briefing to user's Firestore document
+        db.collection("users").document(user_id).set(
+            {
+                "last_briefing": {
+                    "location": location,
+                    "time": time,
+                    "energy_level": energy_level,
+                    "confidence_level": confidence_level,
+                    "briefing_data": briefing_data,
+                    "created_at": firestore.SERVER_TIMESTAMP
+                }
+            },
+            merge=True
+        )
+        
+        return jsonify(briefing_data), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# ENDPOINT 2: Regenerate Openers Only
+# ============================================================================
+
+@app.route('/api/regenerate-openers', methods=['POST', 'OPTIONS'])
+def regenerate_openers():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    data = request.get_json()
+    user_id = data.get("user_id")
+    location = data.get("location", "").strip()
+    confidence_level = data.get("confidence_level", 3)
+    previous_openers = data.get("previous_openers", [])
+    
+    if not user_id or not location:
+        return jsonify({"error": "Missing required fields: user_id, location"}), 400
+    
+    try:
+        # Fetch user profile
+        user_doc = db.collection("users").document(user_id).get()
+        if not user_doc.exists:
+            return jsonify({"error": "User not found"}), 404
+        
+        condensed_profile = user_doc.to_dict().get("condensed_profile", "")
+        
+        # Load openers prompt
+        try:
+            with open("prompt_openers.txt", "r") as f:
+                openers_prompt_template = f.read()
+        except FileNotFoundError:
+            return jsonify({"error": "prompt_openers.txt not found"}), 500
+        
+        system_prompt = openers_prompt_template.format(
+            location=location,
+            confidence_level=confidence_level,
+            condensed_profile=condensed_profile,
+            previous_opener_ids=",".join(previous_openers)
+        )
+        
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages,
+            temperature=0.8,
+            max_tokens=1200
+        )
+        
+        openers_text = response.choices[0].message.content.strip()
+        openers = parse_openers_response(openers_text)
+        
+        return jsonify({"openers": openers}), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# ENDPOINT 3: Save Favorite Opener
+# ============================================================================
+
+@app.route('/api/save-favorite-opener', methods=['POST', 'OPTIONS'])
+def save_favorite_opener():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    data = request.get_json()
+    user_id = data.get("user_id")
+    opener_id = data.get("opener_id")
+    
+    if not user_id or not opener_id:
+        return jsonify({"error": "Missing required fields: user_id, opener_id"}), 400
+    
+    try:
+        # Add opener to user's favorite_openers array
+        db.collection("users").document(user_id).set(
+            {
+                "favorite_openers": firestore.ArrayUnion([opener_id]),
+                "last_favorite_saved": firestore.SERVER_TIMESTAMP
+            },
+            merge=True
+        )
+        
+        return jsonify({
+            "success": True,
+            "message": "Opener saved to favorites"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================================================
+# HELPER FUNCTIONS: Parsing LLM Responses
+# ============================================================================
+
+def parse_briefing_response(text):
+    """
+    Parse the LLM response into structured briefing data.
+    The prompt should instruct the LLM to return JSON.
+    """
+    try:
+        # Try to extract JSON from the response
+        import re
+        json_match = re.search(r'\{.*\}', text, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        else:
+            # Fallback: return raw text in a structured format
+            return {
+                "venue_intel": {"raw_analysis": text},
+                "openers": [],
+                "scenarios": [],
+                "conversation_flows": [],
+                "cheat_sheet": text
+            }
+    except Exception as e:
+        return {
+            "error": "Failed to parse briefing",
+            "raw_response": text
+        }
+
+
+def parse_openers_response(text):
+    """
+    Parse opener data from LLM response into structured format.
+    """
+    try:
+        import re
+        json_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if json_match:
+            return json.loads(json_match.group())
+        else:
+            # Fallback: return empty list
+            return []
+    except Exception as e:
+        return []
+
+
+
+# ============================================================================
+# OPTIONAL: Save Briefing Session for Analytics
+# ============================================================================
+
+@app.route('/api/save-briefing-session', methods=['POST', 'OPTIONS'])
+def save_briefing_session():
+    """
+    Save user's briefing session for future learning and improvement.
+    """
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    data = request.get_json()
+    user_id = data.get("user_id")
+    session_data = data.get("session_data")  # outcomes, what worked, etc.
+    
+    if not user_id or not session_data:
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    try:
+        db.collection("users").document(user_id).collection("briefing_history").add({
+            "session_data": session_data,
+            "created_at": firestore.SERVER_TIMESTAMP
+        })
+        
+        return jsonify({
+            "success": True,
+            "message": "Session saved for future insights"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/')
 def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
@@ -1587,6 +1840,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
