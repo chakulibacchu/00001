@@ -85,6 +85,73 @@ def write_rewards(data):
 def index():
     return "✅ Groq LLaMA 4 Scout Backend is running."
 
+@app.route('/reply-day-chat-advanced', methods=['POST', 'OPTIONS'])
+def reply_day_chat_advanced():
+    if request.method == 'OPTIONS':
+        return '', 204  # Handle preflight
+
+    data = request.get_json()
+    user_id = data.get("user_id")
+    message = data.get("message", "").strip()
+    goal_name = data.get("goal_name", "").strip()
+    user_places = data.get("user_places", [])
+    user_interests = data.get("user_interests", [])
+
+    if not user_id or not message:
+        return jsonify({"error": "Missing input"}), 400
+
+    # Fetch latest chat for the day
+    chats = db.collection("users").document(user_id).collection("custom_day_chat")
+    docs = list(chats.order_by("day", direction=firestore.Query.DESCENDING).limit(1).stream())
+    if not docs:
+        return jsonify({"error": "Chat not started"}), 404
+
+    doc_ref = docs[0].reference
+    chat_data = docs[0].to_dict()
+    chat_history = chat_data.get("chat", [])
+
+    # Append user message
+    chat_history.append({"role": "user", "content": message})
+
+    # Load prompt file
+    try:
+        with open("prompt_DAYONE_COMPONENTONE.txt", "r") as f:
+            prompt_template = f.read()
+    except FileNotFoundError:
+        return jsonify({"error": "prompt_DAYONE_COMPONENTONE not found"}), 500
+
+    # Inject user-specific info into the prompt
+    system_prompt = prompt_template.format(
+        goal_name=goal_name or "their personal goal",
+        user_places=", ".join(user_places) if user_places else "none",
+        user_interests=", ".join(user_interests) if user_interests else "none"
+    )
+
+    # Add system context
+    context_message = {"role": "system", "content": system_prompt}
+
+    # Prepare messages for model
+    messages_for_model = [chat_history[0]] + [context_message] + chat_history[1:]
+
+    try:
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages_for_model,
+            temperature=0.6,
+            max_tokens=500
+        )
+        reply = response.choices[0].message.content.strip()
+
+        # Append AI response and save
+        chat_history.append({"role": "assistant", "content": reply})
+        doc_ref.update({"chat": chat_history})
+
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
@@ -1302,6 +1369,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
