@@ -180,56 +180,61 @@ def reply_day_chat_advanced():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-  @app.route('/generate-user-places', methods=['POST', 'OPTIONS'])
+@app.route('/generate-user-places', methods=['POST', 'OPTIONS'])
 def generate_user_places():
     if request.method == 'OPTIONS':
         return '', 204  # Handle preflight
 
     data = request.get_json()
     user_id = data.get("user_id")
+    goal_name = data.get("goal_name", "").strip()
 
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
 
-    user_ref = db.collection("users").document(user_id)
-
     # Fetch condensed profile
-    profile_doc = user_ref.get()
-    if not profile_doc.exists:
-        return jsonify({"error": "User not found"}), 404
+    user_doc = db.collection("users").document(user_id).get()
+    if not user_doc.exists:
+        return jsonify({"error": "User not found or profile not generated yet"}), 404
 
-    condensed_profile = profile_doc.to_dict().get("condensed_profile")
+    condensed_profile = user_doc.to_dict().get("condensed_profile", "")
     if not condensed_profile:
-        return jsonify({"error": "No condensed profile found"}), 404
+        return jsonify({"error": "Condensed profile is empty"}), 404
 
-    # Load prompt from file
+    # Load location prompt
     try:
         with open("prompt_location.txt", "r") as f:
-            prompt_template = f.read()
+            location_prompt_template = f.read()
     except FileNotFoundError:
         return jsonify({"error": "prompt_location.txt not found"}), 500
 
-    # Inject condensed profile into prompt
-    places_prompt = prompt_template.format(condensed_profile=condensed_profile)
+    # Inject user info into location prompt
+    system_prompt = location_prompt_template.format(
+        goal_name=goal_name or "their personal goal",
+        condensed_profile=condensed_profile
+    )
+
+    messages_for_model = [{"role": "system", "content": system_prompt}]
 
     try:
         response = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "user", "content": places_prompt}],
-            temperature=0.7,
-            max_tokens=800
+            messages=messages_for_model,
+            temperature=0.6,
+            max_tokens=400
         )
-        places_output = response.choices[0].message.content.strip()
+        suggested_places = response.choices[0].message.content.strip()
 
-        # Save generated places
-        user_ref.update({"suggested_places": places_output})
+        # Optionally save suggested places back to user doc
+        db.collection("users").document(user_id).set(
+            {"suggested_places": suggested_places},
+            merge=True
+        )
 
-        return jsonify({"places": places_output})
+        return jsonify({"suggested_places": suggested_places})
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 
 @app.route('/chat', methods=['POST'])
@@ -1449,6 +1454,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
