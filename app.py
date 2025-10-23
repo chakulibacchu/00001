@@ -88,6 +88,198 @@ def write_rewards(data):
     with open(REWARD_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
+def parse_story_analysis(analysis_text):
+    """
+    Parse LLM response into structured story analysis format.
+    Expected format from LLM should be JSON or structured text.
+    """
+    try:
+        # Try to parse as JSON first
+        import re
+        
+        # Look for JSON in the response
+        json_match = re.search(r'\{[\s\S]*\}', analysis_text)
+        if json_match:
+            analysis_json = json.loads(json_match.group(0))
+            return analysis_json
+        
+        # If no JSON found, try to parse structured text manually
+        # This is a fallback parser
+        lines = analysis_text.strip().split('\n')
+        
+        analysis = {
+            "overallScore": 0,
+            "mechanics": {},
+            "strengths": [],
+            "improvements": [],
+            "rewrittenVersion": ""
+        }
+        
+        current_section = None
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Parse overall score
+            if "overall score" in line.lower() or "overall:" in line.lower():
+                score_match = re.search(r'(\d+)', line)
+                if score_match:
+                    analysis["overallScore"] = int(score_match.group(1))
+            
+            # Parse mechanics
+            elif "hook:" in line.lower():
+                current_section = "hook"
+                analysis["mechanics"]["hook"] = {"score": 0, "feedback": ""}
+            elif "emotion:" in line.lower() or "relatable emotion:" in line.lower():
+                current_section = "emotion"
+                analysis["mechanics"]["emotion"] = {"score": 0, "feedback": ""}
+            elif "details:" in line.lower() or "specific details:" in line.lower():
+                current_section = "details"
+                analysis["mechanics"]["details"] = {"score": 0, "feedback": ""}
+            elif "stakes:" in line.lower():
+                current_section = "stakes"
+                analysis["mechanics"]["stakes"] = {"score": 0, "feedback": ""}
+            elif "resolution:" in line.lower():
+                current_section = "resolution"
+                analysis["mechanics"]["resolution"] = {"score": 0, "feedback": ""}
+            elif "bridge:" in line.lower():
+                current_section = "bridge"
+                analysis["mechanics"]["bridge"] = {"score": 0, "feedback": ""}
+            
+            # Parse strengths
+            elif "strengths:" in line.lower():
+                current_section = "strengths"
+            elif "improvements:" in line.lower() or "areas to improve:" in line.lower():
+                current_section = "improvements"
+            elif "rewritten" in line.lower() or "improved version:" in line.lower():
+                current_section = "rewritten"
+            
+            # Parse content based on current section
+            elif current_section in ["hook", "emotion", "details", "stakes", "resolution", "bridge"]:
+                if line:
+                    score_match = re.search(r'(\d+)/100', line)
+                    if score_match:
+                        analysis["mechanics"][current_section]["score"] = int(score_match.group(1))
+                    if "feedback:" in line.lower():
+                        feedback = line.split("feedback:", 1)[1].strip()
+                        analysis["mechanics"][current_section]["feedback"] = feedback
+                    elif analysis["mechanics"][current_section]["feedback"] == "":
+                        analysis["mechanics"][current_section]["feedback"] = line
+            
+            elif current_section == "strengths" and line and line.startswith(("-", "•", "*", "✓")):
+                analysis["strengths"].append(line.lstrip("-•*✓ ").strip())
+            
+            elif current_section == "improvements" and line and line.startswith(("-", "•", "*", "→")):
+                analysis["improvements"].append(line.lstrip("-•*→ ").strip())
+            
+            elif current_section == "rewritten" and line:
+                analysis["rewrittenVersion"] += line + " "
+        
+        # Clean up rewritten version
+        analysis["rewrittenVersion"] = analysis["rewrittenVersion"].strip().strip('"').strip("'")
+        
+        # Ensure all mechanics have default values if missing
+        for mechanic in ["hook", "emotion", "details", "stakes", "resolution", "bridge"]:
+            if mechanic not in analysis["mechanics"]:
+                analysis["mechanics"][mechanic] = {"score": 50, "feedback": "No feedback available"}
+        
+        return analysis
+        
+    except Exception as e:
+        print(f"Error parsing story analysis: {str(e)}")
+        # Return default structure on parse failure
+        return {
+            "overallScore": 50,
+            "mechanics": {
+                "hook": {"score": 50, "feedback": "Unable to analyze"},
+                "emotion": {"score": 50, "feedback": "Unable to analyze"},
+                "details": {"score": 50, "feedback": "Unable to analyze"},
+                "stakes": {"score": 50, "feedback": "Unable to analyze"},
+                "resolution": {"score": 50, "feedback": "Unable to analyze"},
+                "bridge": {"score": 50, "feedback": "Unable to analyze"}
+            },
+            "strengths": ["Analysis error occurred"],
+            "improvements": ["Please try again"],
+            "rewrittenVersion": story_text
+        }
+
+
+
+
+@app.route('/api/judge-story', methods=['POST', 'OPTIONS'])
+def judge_story():
+    if request.method == 'OPTIONS':
+        return '', 204
+    
+    data = request.get_json()
+    user_id = data.get("user_id")
+    story_text = data.get("storyText", "").strip()
+    scenario = data.get("scenario", "").strip()
+    scenario_context = data.get("scenarioContext", "").strip()
+    
+    # Validation
+    if not user_id:
+        return jsonify({"error": "Missing required field: user_id"}), 400
+    
+    if not story_text or len(story_text) < 50:
+        return jsonify({"error": "Story must be at least 50 characters"}), 400
+    
+    if not scenario:
+        return jsonify({"error": "Missing required field: scenario"}), 400
+    
+    try:
+        # Load prompt template for story judging
+        try:
+            with open("prompt_story_judge.txt", "r") as f:
+                judge_prompt_template = f.read()
+        except FileNotFoundError:
+            return jsonify({"error": "prompt_story_judge.txt not found"}), 500
+        
+        # Build system prompt
+        system_prompt = judge_prompt_template.format(
+            scenario=scenario,
+            scenario_context=scenario_context,
+            story_text=story_text
+        )
+        
+        # Call LLM to analyze the story
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages,
+            temperature=0.7,
+            max_tokens=2500
+        )
+        
+        analysis_text = response.choices[0].message.content.strip()
+        
+        # Parse the response into structured format
+        analysis_data = parse_story_analysis(analysis_text)
+        
+        # Validate that we got proper analysis
+        if not analysis_data or "overallScore" not in analysis_data:
+            return jsonify({"error": "Failed to parse AI analysis"}), 500
+        
+        # Save analysis to Firestore
+        db.collection("users").document(user_id).collection("storyJudgments").add({
+            "story_text": story_text,
+            "scenario": scenario,
+            "scenario_context": scenario_context,
+            "analysis": analysis_data,
+            "created_at": firestore.SERVER_TIMESTAMP
+        })
+        
+        return jsonify({
+            "success": True,
+            "analysis": analysis_data
+        }), 200
+        
+    except Exception as e:
+        print(f"Error in judge_story: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+        
+
 
 @app.route('/api/chat/message', methods=['POST'])
 def chat_message():
@@ -2000,6 +2192,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
