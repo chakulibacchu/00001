@@ -996,13 +996,6 @@ def generate_user_places():
 
 
 
-from flask import Flask, request, jsonify
-from firebase_admin import firestore
-import client  # your LLaMA / Groq client import
-from utils import load_prompt  # function to load your prompt file
-
-app = Flask(__name__)
-db = firestore.client()
 
 CONVERSATION_STATES = [
     "context",       # Context & Current Life Snapshot
@@ -2223,6 +2216,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
