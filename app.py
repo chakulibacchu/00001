@@ -89,583 +89,165 @@ def write_rewards(data):
         json.dump(data, f, indent=2)
 
 
-
-# ============================================
-# GENUINE APPRECIATION SKILL ENDPOINTS
-# ============================================
-
-@app.route('/api/skills/chat/message', methods=['POST', 'OPTIONS'])
-def handle_chat_message():
-    """Handle AI coach chat interaction"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    data = request.get_json()
-    user_id = data.get("user_id")
-    session_id = data.get("session_id")
-    message = data.get("message", "").strip()
-    chat_step = data.get("chat_step", 0)
-    skill_id = data.get("skill_id", "genuine_appreciation")
-    
-    # Validation
-    if not user_id or not message:
-        return jsonify({"error": "Missing required fields: user_id, message"}), 400
-    
+@app.route('/api/chat/message', methods=['POST'])
+def chat_message():
     try:
-        # Fetch user's condensed profile for personalization
-        user_doc = db.collection("users").document(user_id).get()
-        if not user_doc.exists:
-            return jsonify({"error": "User not found"}), 404
+        data = request.get_json()
+        user_id = data.get("user_id")
+        user_message = data.get("message", "").strip()
+        chat_step = data.get("chatStep", 0)
+        conversation_id = data.get("conversationId", "")
+        skill_name = data.get("skill_name", "genuine-appreciation")  # Default skill
         
-        user_data = user_doc.to_dict()
-        condensed_profile = user_data.get("condensed_profile", "")
+        # Validation
+        if not user_id or not user_message:
+            return jsonify({"error": "Missing user_id or message"}), 400
         
-        # Load prompt template
-        try:
-            with open("prompt_appreciation_coach.txt", "r") as f:
-                coach_prompt_template = f.read()
-        except FileNotFoundError:
-            return jsonify({"error": "prompt_appreciation_coach.txt not found"}), 500
+        # Get API key from Authorization header
+        api_key = None
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            api_key = auth_header[len("Bearer "):].strip()
         
-        # Fetch chat history for context
-        chat_history = []
-        if session_id:
-            chat_ref = db.collection("chat_sessions").document(session_id)
-            chat_doc = chat_ref.get()
-            if chat_doc.exists:
-                chat_history = chat_doc.to_dict().get("messages", [])
+        if not api_key:
+            return jsonify({"error": "Missing API key in Authorization header"}), 401
+        
+        # Initialize client with provided API key
+        client.api_key = api_key
+        
+        # Generate conversation_id if not provided
+        if not conversation_id:
+            conversation_id = f"conv_{user_id}_{int(time.time())}"
+        
+        # Load conversation history from Firebase
+        doc_ref = db.collection("chat_conversations").document(conversation_id)
+        doc = doc_ref.get()
+        
+        if doc.exists:
+            history = doc.to_dict().get("messages", [])
         else:
-            # Create new session
-            session_id = db.collection("chat_sessions").document().id
+            # First time: load the appreciation coach prompt
+            prompt_template = load_prompt("prompt_appreciation_coach.txt")
+            if not prompt_template:
+                return jsonify({"error": "prompt_appreciation_coach.txt not found"}), 500
+            
+            # Inject skill context into the prompt
+            system_prompt = prompt_template.format(
+                skill_name=skill_name,
+                user_name=data.get("userName", "there")
+            )
+            history = [{"role": "system", "content": system_prompt}]
         
-        # Build conversation context
-        conversation_context = "\n".join([
-            f"{'User' if msg['type'] == 'user' else 'Coach'}: {msg['content']}"
-            for msg in chat_history[-6:]  # Last 3 exchanges
-        ])
-        
-        # Build system prompt
-        system_prompt = coach_prompt_template.format(
-            skill_id=skill_id,
-            chat_step=chat_step,
-            user_message=message,
-            condensed_profile=condensed_profile,
-            conversation_context=conversation_context
-        )
-        
-        # Call LLM
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": message}
-        ]
-        
-        response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=500
-        )
-        
-        ai_response = response.choices[0].message.content.strip()
-        
-        # Save chat history
-        chat_history.extend([
-            {"type": "user", "content": message, "timestamp": firestore.SERVER_TIMESTAMP},
-            {"type": "bot", "content": ai_response, "timestamp": firestore.SERVER_TIMESTAMP}
-        ])
-        
-        db.collection("chat_sessions").document(session_id).set({
-            "user_id": user_id,
-            "skill_id": skill_id,
-            "messages": chat_history,
-            "updated_at": firestore.SERVER_TIMESTAMP
-        }, merge=True)
-        
-        return jsonify({
-            "response": ai_response,
-            "session_id": session_id,
-            "next_step": chat_step + 1
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/scenarios', methods=['GET', 'OPTIONS'])
-def get_scenarios():
-    """Get practice scenarios for a skill"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    skill_id = request.args.get("skill_id", "genuine_appreciation")
-    user_id = request.args.get("user_id")
-    
-    if not user_id:
-        return jsonify({"error": "Missing required field: user_id"}), 400
-    
-    try:
-        # Fetch scenarios from Firestore
-        scenarios_ref = db.collection("scenarios").where("skill_id", "==", skill_id)
-        scenarios_docs = scenarios_ref.stream()
-        
-        scenarios = []
-        for doc in scenarios_docs:
-            scenario_data = doc.to_dict()
-            scenario_data["id"] = doc.id
-            scenarios.append(scenario_data)
-        
-        # If no scenarios in DB, return hardcoded ones
-        if not scenarios:
-            scenarios = get_default_scenarios(skill_id)
-        
-        return jsonify({"scenarios": scenarios}), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/scenarios/evaluate', methods=['POST', 'OPTIONS'])
-def evaluate_scenario():
-    """Evaluate user's scenario response"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    data = request.get_json()
-    user_id = data.get("user_id")
-    scenario_id = data.get("scenario_id")
-    selected_option_id = data.get("selected_option_id")
-    skill_id = data.get("skill_id", "genuine_appreciation")
-    
-    # Validation
-    if not user_id or not scenario_id or not selected_option_id:
-        return jsonify({"error": "Missing required fields"}), 400
-    
-    try:
-        # Fetch scenario from Firestore
-        scenario_doc = db.collection("scenarios").document(scenario_id).get()
-        
-        if not scenario_doc.exists:
-            return jsonify({"error": "Scenario not found"}), 404
-        
-        scenario_data = scenario_doc.to_dict()
-        
-        # Find selected option
-        selected_option = None
-        for option in scenario_data.get("options", []):
-            if option["id"] == selected_option_id:
-                selected_option = option
-                break
-        
-        if not selected_option:
-            return jsonify({"error": "Option not found"}), 404
-        
-        # Get user's current progress
-        user_progress_ref = db.collection("users").document(user_id).collection("skill_progress").document(skill_id)
-        progress_doc = user_progress_ref.get()
-        
-        current_xp = 0
-        completed_scenarios = []
-        
-        if progress_doc.exists:
-            progress_data = progress_doc.to_dict()
-            current_xp = progress_data.get("total_xp", 0)
-            completed_scenarios = progress_data.get("completed_scenarios", [])
-        
-        # Update XP
-        new_xp = current_xp + selected_option.get("xp", 0)
-        
-        # Add scenario to completed list if not already there
-        if scenario_id not in completed_scenarios:
-            completed_scenarios.append(scenario_id)
-        
-        # Save progress
-        user_progress_ref.set({
-            "skill_id": skill_id,
-            "total_xp": new_xp,
-            "completed_scenarios": completed_scenarios,
-            "last_scenario_at": firestore.SERVER_TIMESTAMP,
-            "updated_at": firestore.SERVER_TIMESTAMP
-        }, merge=True)
-        
-        return jsonify({
-            "is_correct": selected_option.get("isGenuine", False),
-            "feedback": selected_option.get("feedback", ""),
-            "xp_earned": selected_option.get("xp", 0),
-            "total_xp": new_xp,
-            "is_complete": len(completed_scenarios) >= get_total_scenarios_count(skill_id)
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/progress', methods=['POST', 'OPTIONS'])
-def save_progress():
-    """Save user progress through skill"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    data = request.get_json()
-    user_id = data.get("user_id")
-    skill_id = data.get("skill_id", "genuine_appreciation")
-    stage = data.get("stage")
-    completed_scenarios = data.get("completed_scenarios", [])
-    total_xp = data.get("total_xp", 0)
-    reflection = data.get("reflection", "")
-    mission_target = data.get("mission_target", "")
-    
-    # Validation
-    if not user_id or not stage:
-        return jsonify({"error": "Missing required fields: user_id, stage"}), 400
-    
-    try:
-        # Save to Firestore
-        progress_ref = db.collection("users").document(user_id).collection("skill_progress").document(skill_id)
-        
-        progress_data = {
-            "skill_id": skill_id,
-            "stage": stage,
-            "completed_scenarios": completed_scenarios,
-            "total_xp": total_xp,
-            "updated_at": firestore.SERVER_TIMESTAMP
+        # Add context reminder based on chat step
+        step_context = get_step_context(chat_step, skill_name)
+        context_message = {
+            "role": "system",
+            "content": f"Current step: {chat_step}. {step_context}"
         }
         
-        if reflection:
-            progress_data["reflection"] = reflection
-            progress_data["reflection_saved_at"] = firestore.SERVER_TIMESTAMP
+        # Build full message list for the AI
+        messages_for_model = [history[0], context_message] + history[1:]
+        messages_for_model.append({"role": "user", "content": user_message})
         
-        if mission_target:
-            progress_data["mission_target"] = mission_target
-            progress_data["mission_created_at"] = firestore.SERVER_TIMESTAMP
-            progress_data["mission_deadline"] = firestore.SERVER_TIMESTAMP  # Add 24 hours
-            progress_data["mission_status"] = "active"
+        # Call the LLaMA / Groq model
+        response = client.chat.completions.create(
+            model="groq/compound",
+            messages=messages_for_model,
+            temperature=0.7,
+            max_tokens=300
+        )
         
-        progress_ref.set(progress_data, merge=True)
+        ai_message = response.choices[0].message.content.strip()
         
-        # If skill is completed, update user's main document
-        if stage == "complete":
-            db.collection("users").document(user_id).set({
-                "completed_skills": firestore.ArrayUnion([skill_id]),
-                "total_xp": firestore.Increment(total_xp),
-                "last_skill_completed": skill_id,
-                "last_skill_completed_at": firestore.SERVER_TIMESTAMP
-            }, merge=True)
+        # Determine next step and flow control
+        next_step = chat_step
+        should_continue_chat = True
+        ready_for_scenarios = False
         
-        return jsonify({
-            "success": True,
-            "progress_id": skill_id
-        }), 200
+        # Check for transition signals in AI response
+        if "ready to practice" in ai_message.lower() or "real scenario" in ai_message.lower():
+            next_step = 3
+            should_continue_chat = False
+            ready_for_scenarios = True
+        elif chat_step < 3:
+            next_step = chat_step + 1
         
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/progress', methods=['GET', 'OPTIONS'])
-def get_progress():
-    """Get user's progress for a skill"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    user_id = request.args.get("user_id")
-    skill_id = request.args.get("skill_id", "genuine_appreciation")
-    
-    if not user_id:
-        return jsonify({"error": "Missing required field: user_id"}), 400
-    
-    try:
-        progress_ref = db.collection("users").document(user_id).collection("skill_progress").document(skill_id)
-        progress_doc = progress_ref.get()
+        # Append user + AI message to history
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": ai_message})
         
-        if not progress_doc.exists:
-            return jsonify({
-                "stage": "intro",
-                "total_xp": 0,
-                "completed_scenarios": [],
-                "exists": False
-            }), 200
-        
-        progress_data = progress_doc.to_dict()
-        progress_data["exists"] = True
-        
-        return jsonify(progress_data), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/reflection', methods=['POST', 'OPTIONS'])
-def save_reflection():
-    """Save user's personal reflection"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    data = request.get_json()
-    user_id = data.get("user_id")
-    skill_id = data.get("skill_id", "genuine_appreciation")
-    reflection = data.get("reflection", "").strip()
-    
-    # Validation
-    if not user_id or not reflection:
-        return jsonify({"error": "Missing required fields: user_id, reflection"}), 400
-    
-    if len(reflection) < 50:
-        return jsonify({"error": "Reflection too short. Please write at least 50 characters."}), 400
-    
-    try:
-        reflection_ref = db.collection("reflections").document()
-        reflection_id = reflection_ref.id
-        
-        reflection_ref.set({
-            "id": reflection_id,
+        # Save updated conversation to Firebase
+        doc_ref.set({
+            "messages": history,
             "user_id": user_id,
-            "skill_id": skill_id,
-            "reflection": reflection,
-            "created_at": firestore.SERVER_TIMESTAMP
+            "skill_name": skill_name,
+            "last_updated": firestore.SERVER_TIMESTAMP,
+            "chat_step": next_step
         })
         
-        # Also save to user's progress
-        db.collection("users").document(user_id).collection("skill_progress").document(skill_id).set({
-            "reflection": reflection,
-            "reflection_saved_at": firestore.SERVER_TIMESTAMP
-        }, merge=True)
-        
+        # Return structured response
         return jsonify({
             "success": True,
-            "reflection_id": reflection_id
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/mission', methods=['POST', 'OPTIONS'])
-def save_mission():
-    """Save user's mission"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    data = request.get_json()
-    user_id = data.get("user_id")
-    skill_id = data.get("skill_id", "genuine_appreciation")
-    mission_target = data.get("mission_target", "").strip()
-    
-    # Validation
-    if not user_id or not mission_target:
-        return jsonify({"error": "Missing required fields: user_id, mission_target"}), 400
-    
-    try:
-        from datetime import datetime, timedelta
-        
-        mission_ref = db.collection("missions").document()
-        mission_id = mission_ref.id
-        
-        deadline = datetime.now() + timedelta(hours=24)
-        
-        mission_ref.set({
-            "id": mission_id,
-            "user_id": user_id,
-            "skill_id": skill_id,
-            "mission_target": mission_target,
-            "status": "active",
-            "deadline": deadline,
-            "created_at": firestore.SERVER_TIMESTAMP
-        })
-        
-        # Also save to user's progress
-        db.collection("users").document(user_id).collection("skill_progress").document(skill_id).set({
-            "mission_target": mission_target,
-            "mission_id": mission_id,
-            "mission_status": "active",
-            "mission_created_at": firestore.SERVER_TIMESTAMP,
-            "mission_deadline": deadline
-        }, merge=True)
-        
-        return jsonify({
-            "success": True,
-            "mission_id": mission_id,
-            "deadline": deadline.isoformat()
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/mission/<mission_id>/complete', methods=['PUT', 'OPTIONS'])
-def complete_mission(mission_id):
-    """Mark mission as completed"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    data = request.get_json()
-    user_id = data.get("user_id")
-    feedback = data.get("feedback", "")
-    
-    if not user_id:
-        return jsonify({"error": "Missing required field: user_id"}), 400
-    
-    try:
-        mission_ref = db.collection("missions").document(mission_id)
-        mission_doc = mission_ref.get()
-        
-        if not mission_doc.exists:
-            return jsonify({"error": "Mission not found"}), 404
-        
-        mission_data = mission_doc.to_dict()
-        
-        if mission_data.get("user_id") != user_id:
-            return jsonify({"error": "Unauthorized"}), 403
-        
-        # Update mission
-        mission_ref.update({
-            "status": "completed",
-            "completed_at": firestore.SERVER_TIMESTAMP,
-            "feedback": feedback
-        })
-        
-        # Bonus XP for completing mission
-        bonus_xp = 10
-        skill_id = mission_data.get("skill_id")
-        
-        db.collection("users").document(user_id).collection("skill_progress").document(skill_id).update({
-            "mission_status": "completed",
-            "mission_completed_at": firestore.SERVER_TIMESTAMP,
-            "total_xp": firestore.Increment(bonus_xp)
-        })
-        
-        return jsonify({
-            "success": True,
-            "bonus_xp": bonus_xp
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/skills/stats', methods=['GET', 'OPTIONS'])
-def get_user_stats():
-    """Get overall user statistics"""
-    if request.method == 'OPTIONS':
-        return '', 204
-    
-    user_id = request.args.get("user_id")
-    
-    if not user_id:
-        return jsonify({"error": "Missing required field: user_id"}), 400
-    
-    try:
-        user_doc = db.collection("users").document(user_id).get()
-        
-        if not user_doc.exists:
-            return jsonify({"error": "User not found"}), 404
-        
-        user_data = user_doc.to_dict()
-        
-        # Get all skill progress
-        skills_ref = db.collection("users").document(user_id).collection("skill_progress")
-        skills_docs = skills_ref.stream()
-        
-        total_xp = 0
-        completed_skills = []
-        active_skills = []
-        
-        for skill_doc in skills_docs:
-            skill_data = skill_doc.to_dict()
-            skill_id = skill_doc.id
-            
-            total_xp += skill_data.get("total_xp", 0)
-            
-            if skill_data.get("stage") == "complete":
-                completed_skills.append(skill_id)
-            else:
-                active_skills.append(skill_id)
-        
-        return jsonify({
-            "total_xp": total_xp,
-            "completed_skills": completed_skills,
-            "active_skills": active_skills,
-            "user_name": user_data.get("name", "User")
-        }), 200
-        
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ============================================
-# HELPER FUNCTIONS
-# ============================================
-
-def get_default_scenarios(skill_id):
-    """Return hardcoded scenarios if none in database"""
-    if skill_id == "genuine_appreciation":
-        return [
-            {
-                "id": "scenario1",
-                "skill_id": "genuine_appreciation",
-                "context": "workplace",
-                "situation": "Your coworker Sarah stayed late last night to help you meet a tight deadline. The project was successful.",
-                "character": "👩‍💼",
-                "options": [
-                    {
-                        "id": "opt1",
-                        "text": "Thanks for your help!",
-                        "isGenuine": False,
-                        "feedback": "This is polite but generic. It doesn't acknowledge what Sarah specifically did or the impact it had.",
-                        "xp": 5
-                    },
-                    {
-                        "id": "opt2",
-                        "text": "Sarah, I really appreciate you staying late to help with the analytics section. Your attention to detail caught errors I completely missed, and it made our presentation so much stronger.",
-                        "isGenuine": True,
-                        "feedback": "Perfect! This is genuine because it's specific (analytics section), acknowledges the sacrifice (staying late), recognizes a quality (attention to detail), and explains the impact (stronger presentation).",
-                        "xp": 25
-                    },
-                    {
-                        "id": "opt3",
-                        "text": "You're such a team player, Sarah!",
-                        "isGenuine": False,
-                        "feedback": "While positive, this is a surface-level compliment. It doesn't reference specific actions or show you truly noticed what she did.",
-                        "xp": 10
-                    }
-                ]
-            },
-            {
-                "id": "scenario2",
-                "skill_id": "genuine_appreciation",
-                "context": "personal",
-                "situation": "Your friend remembered your job interview and texted you asking how it went, even though they were dealing with their own stressful week.",
-                "character": "🧑‍🤝‍🧑",
-                "options": [
-                    {
-                        "id": "opt1",
-                        "text": "Thanks for checking in!",
-                        "isGenuine": False,
-                        "feedback": "Too brief. Doesn't acknowledge that they made time despite their own stress.",
-                        "xp": 5
-                    },
-                    {
-                        "id": "opt2",
-                        "text": "I really appreciate that you remembered and reached out, especially knowing you've had a tough week yourself. It means a lot that you made space to care about what's going on with me.",
-                        "isGenuine": True,
-                        "feedback": "Excellent! You acknowledged their specific action (reaching out), recognized their context (tough week), and explained the emotional impact (means a lot).",
-                        "xp": 25
-                    },
-                    {
-                        "id": "opt3",
-                        "text": "You're the best friend ever!",
-                        "isGenuine": False,
-                        "feedback": "Hyperbolic and vague. Genuine appreciation is about specific observations, not generic superlatives.",
-                        "xp": 10
-                    }
-                ]
+            "data": {
+                "reply": ai_message,
+                "nextStep": next_step,
+                "conversationId": conversation_id,
+                "shouldContinueChat": should_continue_chat,
+                "readyForScenarios": ready_for_scenarios,
+                "timestamp": datetime.now().isoformat(),
+                "promptType": get_prompt_type(chat_step),
+                "metadata": {
+                    "messageId": f"msg_{int(time.time())}",
+                    "aiModel": "groq/compound",
+                    "tokensUsed": response.usage.total_tokens if hasattr(response, 'usage') else None
+                }
             }
-        ]
-    return []
-
-def get_total_scenarios_count(skill_id):
-    """Get total number of scenarios for a skill"""
-    scenarios_ref = db.collection("scenarios").where("skill_id", "==", skill_id)
-    return len(list(scenarios_ref.stream()))
+        })
     
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": {
+                "code": "UNEXPECTED_ERROR",
+                "message": f"Unexpected error: {str(e)}",
+                "retryable": True
+            }
+        }), 500
+
+
+# Helper function: Get step-specific context
+def get_step_context(chat_step, skill_name):
+    """Returns context based on current chat step"""
+    contexts = {
+        0: f"User is sharing an initial example about {skill_name}. Ask them to identify specific qualities or actions.",
+        1: "User has shared qualities/actions. Now ask how they could express this genuinely.",
+        2: "User has practiced expression. Provide encouraging feedback and transition to scenarios.",
+        3: "User is ready for scenario practice. Wrap up the conversation warmly."
+    }
+    return contexts.get(chat_step, "Continue the coaching conversation naturally.")
+
+
+# Helper function: Get prompt type for frontend
+def get_prompt_type(chat_step):
+    """Maps chat step to prompt type"""
+    types = {
+        0: "greeting",
+        1: "dig_deeper",
+        2: "practice_expression",
+        3: "transition_to_scenarios"
+    }
+    return types.get(chat_step, "general")
+
+
+# Helper function: Load prompt file
+def load_prompt(filename):
+    """Load prompt template from file"""
+    try:
+        prompt_path = os.path.join(os.path.dirname(__file__), 'prompts', filename)
+        with open(prompt_path, 'r', encoding='utf-8') as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
 
 @app.route('/api/generate-briefing', methods=['POST', 'OPTIONS'])
 def generate_briefing():
@@ -2418,6 +2000,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
