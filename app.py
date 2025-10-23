@@ -14,7 +14,7 @@ import time
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # CORS for all origins
+CORS(app, resources={r"/*": {"origins": "*"}})  # CORS for all originsg
 
 # Load Firebase config from environment variable
 firebase_config_json = os.environ.get("FIREBASE_CONFIG")
@@ -995,6 +995,25 @@ def generate_user_places():
         return jsonify({"error": str(e)}), 500
 
 
+
+from flask import Flask, request, jsonify
+from firebase_admin import firestore
+import client  # your LLaMA / Groq client import
+from utils import load_prompt  # function to load your prompt file
+
+app = Flask(__name__)
+db = firestore.client()
+
+CONVERSATION_STATES = [
+    "context",       # Context & Current Life Snapshot
+    "habits",        # Habits & Daily Patterns
+    "social",        # Social Circle & Interactions
+    "obstacles",     # Obstacles & Pain Points
+    "resources",     # Resources & Support
+    "motivation",    # Motivation & Desired Outcome
+    "final_goal"     # Goal Confirmation
+]
+
 @app.route('/chat', methods=['POST'])
 def chat():
     try:
@@ -1014,37 +1033,42 @@ def chat():
         if not api_key:
             return jsonify({"error": "Missing API key in Authorization header"}), 401
 
-        # Initialize client with provided API key
         client.api_key = api_key
 
-        # Load conversation history from Firebase
+        # Load conversation from Firebase
         doc_ref = db.collection("conversations").document(user_id)
         doc = doc_ref.get()
-
         if doc.exists:
-            history = doc.to_dict().get("messages", [])
+            doc_data = doc.to_dict()
+            history = doc_data.get("messages", [])
+            states = doc_data.get("states", {s: "" for s in CONVERSATION_STATES})
+            current_state = doc_data.get("current_state", "context")
         else:
-            # First time: load your prompt file as the system instruction
             prompt_template = load_prompt("prompt_setgoal.txt")
             if not prompt_template:
                 return jsonify({"error": "prompt_setgoal.txt not found"}), 500
-
-            # Inject goal_name into the prompt
             system_prompt = prompt_template.format(goal_name=goal_name or "their personal goal")
             history = [{"role": "system", "content": system_prompt}]
+            states = {s: "" for s in CONVERSATION_STATES}
+            current_state = "context"
 
-        # Always reinforce goal_name context
-        context_message = {
+        # Append user message to history
+        history.append({"role": "user", "content": user_message})
+
+        # Build messages for AI enforcing current state
+        messages_for_model = [history[0]]  # system prompt
+        messages_for_model += history[1:]  # conversation so far
+        messages_for_model.append({
             "role": "system",
-            "content": f"Reminder: the user’s goal/context is '{goal_name or 'their personal goal'}'. "
-                       f"Keep this in mind when responding."
-        }
+            "content": (
+                f"You are an empathetic AI coach. The user is in the '{current_state}' state. "
+                f"Ask questions ONLY relevant to this state. Summarize the user's input in a "
+                f"paragraph format to save as the value for this state. "
+                f"Do NOT skip to the next state until input is received."
+            )
+        })
 
-        # Build full message list for the AI
-        messages_for_model = [history[0], context_message] + history[1:]
-        messages_for_model.append({"role": "user", "content": user_message})
-
-        # Call the LLaMA / Groq model
+        # Call the AI
         response = client.chat.completions.create(
             model="groq/compound",
             messages=messages_for_model,
@@ -1054,24 +1078,31 @@ def chat():
 
         ai_message = response.choices[0].message.content.strip()
 
-        # Check if AI provided a finalized goal (expects "Final Goal: <goal_name>" in reply)
-        final_goal = None
-        if "Final Goal:" in ai_message:
-            parts = ai_message.split("Final Goal:")
-            ai_message = parts[0].strip()  # keep conversational reply
-            final_goal = parts[1].strip()
+        # Save user's input as paragraph for current state
+        states[current_state] = ai_message
 
-        # Append user + AI message to history
-        history.append({"role": "user", "content": user_message})
+        # Progress to next state if current input is sufficient
+        current_index = CONVERSATION_STATES.index(current_state)
+        if current_index < len(CONVERSATION_STATES) - 1:
+            next_state = CONVERSATION_STATES[current_index + 1]
+        else:
+            next_state = current_state  # final state remains
+
+        # Append AI message to history
         history.append({"role": "assistant", "content": ai_message})
 
-        # Save updated conversation to Firebase
-        doc_ref.set({"messages": history})
+        # Save to Firebase
+        doc_ref.set({
+            "messages": history,
+            "states": states,
+            "current_state": next_state
+        })
 
-        # Return reply + optional finalized goal
         return jsonify({
             "reply": ai_message,
-            "final_goal": final_goal
+            "current_state": current_state,
+            "next_state": next_state,
+            "states": states
         })
 
     except Exception as e:
@@ -2192,6 +2223,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
