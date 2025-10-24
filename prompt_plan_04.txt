@@ -4,7 +4,6 @@ DO NOT include introductions like “Here is your plan” or “Sure, here’s t
 
 DO NOT include markdown formatting, explanations, or commentary.
 
-DO NOT start with text or notes — the response must begin with [ and end with ].
 
 Only print what is explicitly asked for.
 
