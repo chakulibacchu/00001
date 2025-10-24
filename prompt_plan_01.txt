@@ -174,13 +174,11 @@ Layer reinforcement: Reminders to acknowledge progress, correct mistakes positiv
 
 FORMAT INSTRUCTIONS
 
-
 The "day" field must be labeled "Day 1".
 All strings must use double quotes.
 No trailing commas.
 No commentary.
 No markdown.
-
 
 Output ONLY valid JSON formatted as an array with exactly 1 object for Day 1.
 
