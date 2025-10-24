@@ -843,6 +843,212 @@ Give me encouraging analysis of my progress!"""
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
+
+# ============ LIVE ACTION SUPPORT ENDPOINT ============
+@app.route("/live-action-support", methods=['POST'])
+def live_action_support():
+    # ========== STEP 1: Parse Request ==========
+    data = request.get_json()
+    task_name = data.get("task_name", "").strip()
+    user_id = data.get("user_id", "").strip()
+    user_context = data.get("user_context", {})
+    
+    if not task_name or not user_id:
+        return jsonify({"error": "Missing task_name or user_id"}), 400
+    
+    # Extract user context
+    anxiety_level = user_context.get("anxiety_level", "moderate")
+    experience = user_context.get("experience", "beginner")
+    specific_challenges = user_context.get("specific_challenges", [])
+    category = data.get("category", "General Social")
+    difficulty = data.get("difficulty", "Medium")
+    
+    api_key = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    if not api_key:
+        return jsonify({"error": "Missing API key in Authorization header"}), 401
+    client.api_key = api_key
+    
+    # ========== STEP 2: Load User Profile for Personalization ==========
+    user_profile = None
+    try:
+        user_ref = db.collection('users').document(user_id)
+        user_doc = user_ref.get()
+        if user_doc.exists:
+            user_profile = user_doc.to_dict()
+            print(f"✅ Loaded user profile for personalization")
+    except Exception as e:
+        print(f"⚠️ Could not load user profile: {e}")
+        user_profile = {}
+    
+    # ========== STEP 3: Load Prompt Template ==========
+    prompt_file = "prompt_live_action_task.txt"
+    prompt_template = load_prompt(prompt_file)
+    if not prompt_template:
+        return jsonify({"error": f"{prompt_file} not found"}), 404
+    
+    # Format challenges for prompt
+    formatted_challenges = "\n".join([f"- {c}" for c in specific_challenges]) if specific_challenges else "- General social anxiety"
+    
+    # Replace placeholders
+    prompt = (prompt_template
+              .replace("<<task_name>>", task_name)
+              .replace("<<anxiety_level>>", anxiety_level)
+              .replace("<<experience>>", experience)
+              .replace("<<specific_challenges>>", formatted_challenges)
+              .replace("<<category>>", category)
+              .replace("<<difficulty>>", difficulty))
+    
+    # Add user profile context if available
+    if user_profile:
+        user_stats = {
+            "success_rate": user_profile.get("success_rate", 0),
+            "completed_tasks": user_profile.get("completed_tasks", 0),
+            "preferred_time": user_profile.get("preferred_time", "morning")
+        }
+        prompt += f"\n\nUser Statistics:\n{json.dumps(user_stats, indent=2)}"
+    
+    # ========== STEP 4: Generate AI Task Structure ==========
+    try:
+        response = client.chat.completions.create(
+            model="groq/compound",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=6000
+        )
+        result = response.choices[0].message.content.strip()
+        parsed_task = json.loads(result)
+        print(f"✅ Live action task structure generated from AI")
+    except json.JSONDecodeError:
+        return jsonify({"error": "Failed to parse task structure as JSON", "raw_response": result}), 500
+    except Exception as e:
+        return jsonify({"error": f"API request failed", "exception": str(e)}), 500
+    
+    # ========== STEP 5: Transform to App Structure ==========
+    expected_keys = {
+        "title": ["title", "task_title", "name"],
+        "category": ["category", "type"],
+        "difficulty": ["difficulty", "level"],
+        "description": ["description", "overview"],
+        "totalSteps": ["totalSteps", "total_steps", "step_count"],
+        "estimatedTime": ["estimatedTime", "estimated_time", "duration"],
+        "xpReward": ["xpReward", "xp_reward", "xp"],
+        "prerequisites": ["prerequisites", "required_tasks"],
+        "tags": ["tags", "keywords"],
+        "steps": ["steps", "step_list"],
+        "relatedTasks": ["relatedTasks", "related_tasks"],
+        "aiMetadata": ["aiMetadata", "ai_metadata", "metadata"]
+    }
+    
+    task_data = {}
+    for key, alternatives in expected_keys.items():
+        value = None
+        for alt in alternatives:
+            if alt in parsed_task:
+                value = parsed_task[alt]
+                break
+        
+        # Provide sensible defaults
+        if value is None:
+            if key == "steps":
+                value = []
+            elif key == "prerequisites" or key == "tags" or key == "relatedTasks":
+                value = []
+            elif key == "xpReward":
+                value = 150
+            elif key == "totalSteps":
+                value = 5
+            elif key == "estimatedTime":
+                value = "15 min"
+            elif key == "difficulty":
+                value = difficulty
+            elif key == "category":
+                value = category
+            elif key == "aiMetadata":
+                value = {
+                    "anxietyLevel": anxiety_level,
+                    "skillsTargeted": [],
+                    "commonChallenges": specific_challenges,
+                    "recommendedTimeOfDay": []
+                }
+            else:
+                value = ""
+        task_data[key] = value
+    
+    # ========== STEP 6: Process and Validate Steps ==========
+    raw_steps = task_data.get("steps", [])
+    formatted_steps = []
+    
+    for idx, step in enumerate(raw_steps):
+        if isinstance(step, dict):
+            formatted_step = {
+                "id": idx + 1,
+                "title": step.get("title", f"Step {idx + 1}"),
+                "description": step.get("description", ""),
+                "tips": step.get("tips", []),
+                "examples": step.get("examples", []),
+                "aiCoaching": step.get("aiCoaching", step.get("ai_coaching", "")),
+                "xp": step.get("xp", 30),
+                "media": step.get("media", {
+                    "videoUrl": None,
+                    "imageUrl": None,
+                    "audioUrl": None
+                }),
+                "successCriteria": step.get("successCriteria", step.get("success_criteria", []))
+            }
+            formatted_steps.append(formatted_step)
+    
+    task_data["steps"] = formatted_steps
+    task_data["totalSteps"] = len(formatted_steps)
+    
+    # Calculate total XP if not provided
+    if task_data["xpReward"] == 150:  # Default value
+        task_data["xpReward"] = sum(step.get("xp", 30) for step in formatted_steps)
+    
+    # ========== STEP 7: Generate Unique Task ID ==========
+    task_id = f"{user_id}_{task_name.lower().replace(' ', '_')}_{int(datetime.now().timestamp())}"
+    task_data["id"] = task_id
+    task_data["created_at"] = datetime.now().isoformat()
+    task_data["user_id"] = user_id
+    
+    # ========== STEP 8: Save to Firebase ==========
+    try:
+        # Save to user's live action tasks collection
+        task_ref = db.collection('users').document(user_id).collection('live_action_tasks').document(task_id)
+        task_ref.set(task_data)
+        print(f"✅ Saved to: users/{user_id}/live_action_tasks/{task_id}")
+        
+        # Also update user's task library (shared tasks)
+        library_ref = db.collection('task_library').document(task_id)
+        library_data = task_data.copy()
+        library_data["shared"] = False
+        library_data["creator_id"] = user_id
+        library_ref.set(library_data)
+        print(f"✅ Added to task library: task_library/{task_id}")
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to save to Firebase: {str(e)}"}), 500
+    
+    # ========== STEP 9: Return Response ==========
+    return jsonify({
+        "success": True,
+        "task_id": task_id,
+        "task": task_data,
+        "message": f"Live action task '{task_name}' created successfully"
+    })
+
+
+# ============ HELPER FUNCTION FOR DIFFICULTY ==========
+def determine_difficulty(task_text):
+    """Determine difficulty based on task description"""
+    task_lower = task_text.lower()
+    
+    if any(word in task_lower for word in ['lead', 'present', 'speak to group', 'public']):
+        return 'Hard'
+    elif any(word in task_lower for word in ['conversation', 'share', 'ask question']):
+        return 'Medium'
+    else:
+        return 'Easy'
+
 @app.route('/reply-day-chat-advanced', methods=['POST', 'OPTIONS'])
 def reply_day_chat_advanced():
     if request.method == 'OPTIONS':
@@ -2206,6 +2412,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
