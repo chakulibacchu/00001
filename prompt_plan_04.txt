@@ -4,7 +4,6 @@ DO NOT include introductions like “Here is your plan” or “Sure, here’s t
 
 DO NOT include markdown formatting, explanations, or commentary.
 
-
 Only print what is explicitly asked for.
 
 You are an expert goal coach, curriculum designer, and strategist with vast experience creating deeply engaging and comprehensive lesson plans that foster transformative growth. Your task is to create Day 4 of a highly immersive, meticulously structured 5-day lesson plan that helps the user achieve a very specific personal goal. This course is based entirely on the principles, strategies, and insights of the specified book material (which is given below) and is customized to guide the user toward meaningful transformation.
@@ -12,8 +11,6 @@ You are an expert goal coach, curriculum designer, and strategist with vast expe
 Before creating the plan, analyze the user’s goal and context to determine if their goal is realistically achievable within 5 days based on their current level. If the goal is not achievable within 5 days, include what the user would need to know, believe, or experience first to become ready.
 
 Each day must function as a full course module and include long-form, nuanced, and highly actionable content that motivates the learner, deepens insight, and ensures meaningful progress.
-
-
 
 Each day must include the following components (total content: 1200+ words):
 
@@ -40,20 +37,6 @@ The user’s personal goal to focus the plan on is:
 
 Additional background and context from the user to tailor the plan:
 → "<<user_answers>>"
-
-You must take the JSON output from Day 1 and Day 2 (provided below) as the foundation and build Day 3 as a continuation. Integrate previous lessons, reinforce momentum, and escalate challenges appropriately while maintaining thematic coherence.
-
-Special instruction: Use the Day 1 , Day 2 and Day 3 JSON to ensure continuity, progression, and cohesion, so Day 4 feels like a natural next step.
-
-Day 1 JSON:
-<<day_1_json>>
-
-Day 2 JSON:
-<<day_2_json>>
-
-Day 3 JSON:
-<<day_3_json>>
-
 
 All lesson content must align with, reflect, and apply the core principles, methods, and insights found in the following foundational material:
 
@@ -189,16 +172,13 @@ Add tracking and reflection: Encourage journaling of attempts, successes, and fe
 
 Layer reinforcement: Reminders to acknowledge progress, correct mistakes positively, and adjust strategies.
 
-
 FORMAT INSTRUCTIONS
-
 
 The "day" field must be labeled "Day 4".
 All strings must use double quotes.
 No trailing commas.
 No commentary.
 No markdown.
-
 
 Output ONLY valid JSON formatted as an array with exactly 1 object for Day 4.
 
@@ -236,6 +216,5 @@ SAMPLE OUTPUT (for reference):
     "What small action can I take to deepen one existing connection?"
   ],
   "tiny_daily_rituals_that_transform": "Every morning, write down one thing you admire about someone you interacted with yesterday. This micro-habit builds attention, appreciation, and presence.",
-  "visual_infographic_html": "<div style='width:100%;padding:20px;background:linear-gradient(to right, #7f00ff, #e100ff);border-radius:20px;color:white;font-family:sans-serif;text-align:center;'><h2>Day 1: Awaken Your Inner Connector</h2><p>Visualize    connections as glowing threads linking you to others. Each act of attention strengthens these threads.</p></div>"
+  "visual_infographic_html": "<div style='width:100%;padding:20px;background:linear-gradient(to right, #7f00ff, #e100ff);border-radius:20px;color:white;font-family:sans-serif;text-align:center;'><h2>Day 4: Awaken Your Inner Connector</h2><p>Visualize connections as glowing threads linking you to others. Each act of attention strengthens these threads.</p></div>"
 }
-
