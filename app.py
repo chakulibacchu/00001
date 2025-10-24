@@ -1954,6 +1954,7 @@ def determine_difficulty(task_text):
         return 'hard'
 
 # ============ MAIN ENDPOINT CREATOR ============
+# ============ MAIN ENDPOINT CREATOR (FIXED) ============
 def create_day_endpoint(day):
     endpoint_name = f"final_plan_day_{day}"
     route_path = f"/final-plan-day{day}"
@@ -1962,6 +1963,9 @@ def create_day_endpoint(day):
     def final_plan_day_func():
         # ========== STEP 1: Parse Request ==========
         data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid JSON payload"}), 400
+
         goal_name = data.get("goal_name", "").strip()
         user_answers = data.get("user_answers", [])
         user_id = data.get("user_id", "").strip()
@@ -1969,7 +1973,7 @@ def create_day_endpoint(day):
         
         if not goal_name or not isinstance(user_answers, list) or not user_id:
             return jsonify({"error": "Missing or invalid goal_name, user_answers, or user_id"}), 400
-        
+
         try:
             joined_date = datetime.strptime(join_date_str, "%Y-%m-%d") if join_date_str else datetime.now()
         except:
@@ -1977,6 +1981,10 @@ def create_day_endpoint(day):
         
         day_date = (joined_date + timedelta(days=day-1)).strftime("%Y-%m-%d")
         course_id = goal_name.lower().replace(" ", "_")
+
+        # Escape user inputs to avoid breaking JSON
+        safe_goal_name = json.dumps(goal_name)[1:-1]  # strip surrounding quotes
+        safe_user_answers = json.dumps(user_answers)
         
         formatted_answers = "\n".join(
             [f"{i+1}. {answer.strip()}" for i, answer in enumerate(user_answers) if isinstance(answer, str)]
@@ -1986,7 +1994,7 @@ def create_day_endpoint(day):
         if not api_key:
             return jsonify({"error": "Missing API key in Authorization header"}), 401
         client.api_key = api_key
-        
+
         # ========== STEP 2: Load Previous Day ==========
         previous_day_lesson = None
         if day > 1:
@@ -2002,17 +2010,21 @@ def create_day_endpoint(day):
             except Exception as e:
                 print(f"⚠️ Could not load previous day: {e}")
                 previous_day_lesson = None
-        
+
         # ========== STEP 3: Load Prompt Template ==========
         prompt_file = f"prompt_plan_{day:02}.txt"
         prompt_template = load_prompt(prompt_file)
         if not prompt_template:
             return jsonify({"error": f"{prompt_file} not found"}), 404
-        
-        prompt = prompt_template.replace("<<goal_name>>", goal_name).replace("<<user_answers>>", formatted_answers)
+
+        # Insert safely escaped user inputs
+        prompt = prompt_template.replace("<<goal_name>>", safe_goal_name)
+        prompt = prompt.replace("<<user_answers>>", safe_user_answers)
         if previous_day_lesson:
-            prompt = prompt.replace(f"<<day_{day-1}_json>>", json.dumps(previous_day_lesson))
-        
+            placeholder = f"<<day_{day-1}_json>>"
+            if placeholder in prompt:
+                prompt = prompt.replace(placeholder, json.dumps(previous_day_lesson))
+
         # ========== STEP 4: Generate AI Plan ==========
         try:
             response = client.chat.completions.create(
@@ -2022,25 +2034,38 @@ def create_day_endpoint(day):
                 max_tokens=4096
             )
             result = response.choices[0].message.content.strip()
-            parsed_day_plan = json.loads(result)
-            print(f"✅ Day {day} plan generated from AI")
-        except json.JSONDecodeError:
-            return jsonify({"error": f"Failed to parse Day {day} as JSON", "raw_response": result}), 500
         except Exception as e:
-            return jsonify({"error": f"API request failed", "exception": str(e)}), 500
-        
-        # ========== STEP 5: Transform to App Structure (Flexible) ==========
+            return jsonify({"error": "API request failed", "exception": str(e)}), 500
+
+        # Robust JSON extraction
+        import re
+        def extract_json(text: str):
+            match = re.search(r'(\{.*\})', text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    return None
+            return None
+
+        parsed_day_plan = extract_json(result)
+        if not parsed_day_plan:
+            return jsonify({"error": f"Failed to parse Day {day} as valid JSON", "raw_response": result}), 500
+        print(f"✅ Day {day} plan generated from AI")
+
+        # ========== STEP 5: Transform to App Structure ==========
         expected_keys = {
             "title": ["title", "day_title", "name"],
             "summary": ["summary", "overview", "description"],
             "lesson": ["lesson", "content", "instructions"],
             "motivation": ["motivation", "inspiration", "encouragement"],
             "why": ["why", "purpose", "importance"],
-            "quote": ["quote", "book_quote", "citation"],
-            "consequences": ["consequences", "results", "effects"],
-            "duration": ["duration", "time", "estimated_time"],
-            "xp": ["xp", "points", "experience"],
-            "tasks": ["tasks", "task_list", "actions"]
+            "book_quote": ["book_quote", "citation"],
+            "secret_hacks_and_shortcuts": ["secret_hacks_and_shortcuts", "tips", "hacks"],
+            "self_coaching_questions": ["self_coaching_questions", "questions", "prompts"],
+            "tiny_daily_rituals_that_transform": ["tiny_daily_rituals_that_transform", "rituals", "micro_habits"],
+            "visual_infographic_html": ["visual_infographic_html", "infographic", "html"],
+            "task": ["task", "tasks", "actions"]
         }
 
         lesson_data = {}
@@ -2050,45 +2075,39 @@ def create_day_endpoint(day):
                 if alt in parsed_day_plan:
                     value = parsed_day_plan[alt]
                     break
-            # Provide sensible defaults
+            # sensible defaults
             if value is None:
-                if key == "tasks":
+                if key == "task":
                     value = []
-                elif key == "consequences":
-                    value = {"positive": "", "negative": ""}
-                elif key == "xp":
-                    value = 100
-                elif key == "duration":
-                    value = "15 min"
+                elif key == "self_coaching_questions":
+                    value = []
+                elif key == "book_quote" or key == "motivation" or key == "summary" or key == "title":
+                    value = ""
                 else:
                     value = ""
             lesson_data[key] = value
 
-        # Convert tasks to app format
-        raw_tasks = lesson_data.get("tasks", [])
+        # Normalize tasks
+        raw_tasks = lesson_data.get("task", [])
         if isinstance(raw_tasks, list):
-            lesson_data["tasks"] = [
+            lesson_data["task"] = [
                 {
-                    "task": task if isinstance(task, str) else task.get("task", ""),
-                    "done": False,
-                    "difficulty": determine_difficulty(task if isinstance(task, str) else task.get("task", "")),
-                    "timeSpent": 0,
-                    "notes": ""
+                    "task_number": i+1,
+                    "description": task if isinstance(task, str) else task.get("description", "")
                 }
-                for task in raw_tasks
+                for i, task in enumerate(raw_tasks[:3])
             ]
+            # Ensure exactly 3 tasks
+            while len(lesson_data["task"]) < 3:
+                lesson_data["task"].append({"task_number": len(lesson_data["task"])+1, "description": ""})
         else:
-            lesson_data["tasks"] = []
+            lesson_data["task"] = []
 
         # Add date and completion info
         lesson_data["date"] = day_date
         lesson_data["completed"] = False
         lesson_data["reflection"] = ""
-        
-        # Add quiz if present
-        if "quiz" in parsed_day_plan:
-            lesson_data["quiz"] = parsed_day_plan["quiz"]
-        
+
         # ========== STEP 6: Save to Firebase ==========
         try:
             course_ref = get_course_ref(user_id, course_id)
@@ -2098,7 +2117,6 @@ def create_day_endpoint(day):
                 lessons_by_date = course_data.get('lessons_by_date', {})
                 lessons_by_date[day_date] = lesson_data
                 course_ref.update({'lessons_by_date': lessons_by_date})
-                print(f"✅ Updated existing course with Day {day}")
             else:
                 course_ref.set({
                     'joined_date': joined_date.strftime("%Y-%m-%d"),
@@ -2106,11 +2124,10 @@ def create_day_endpoint(day):
                     'lessons_by_date': {day_date: lesson_data},
                     'created_at': datetime.now().isoformat()
                 })
-                print(f"✅ Created new course with Day {day}")
-            print(f"✅ Saved to: users/{user_id}/datedcourses/{course_id}")
+            print(f"✅ Saved Day {day} to Firebase")
         except Exception as e:
             return jsonify({"error": f"Failed to save to Firebase: {str(e)}"}), 500
-        
+
         # ========== STEP 7: Return Response ==========
         return jsonify({
             "success": True,
@@ -2432,6 +2449,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
