@@ -845,6 +845,7 @@ Give me encouraging analysis of my progress!"""
 
 
 # ============ LIVE ACTION SUPPORT ENDPOINT ============
+# ============ LIVE ACTION SUPPORT ENDPOINT ============
 @app.route("/live-action-support", methods=['POST'])
 def live_action_support():
     # ========== STEP 1: Parse Request ==========
@@ -881,8 +882,9 @@ def live_action_support():
         user_profile = {}
     
     # ========== STEP 3: Load Prompt Template ==========
+    # NOTE: Assuming load_prompt and other dependencies (db, client, jsonify, request, json, datetime) are defined elsewhere
     prompt_file = "prompt_live_action_task.txt"
-    prompt_template = load_prompt(prompt_file)
+    prompt_template = load_prompt(prompt_file) 
     if not prompt_template:
         return jsonify({"error": f"{prompt_file} not found"}), 404
     
@@ -905,9 +907,11 @@ def live_action_support():
             "completed_tasks": user_profile.get("completed_tasks", 0),
             "preferred_time": user_profile.get("preferred_time", "morning")
         }
+        # Assuming 'json' module is available for dumping stats
         prompt += f"\n\nUser Statistics:\n{json.dumps(user_stats, indent=2)}"
     
-    # ========== STEP 4: Generate AI Task Structure ==========
+    # ========== STEP 4: Generate AI Task Structure (FIX APPLIED HERE) ==========
+    result = "" # Initialize result for scope outside try block
     try:
         response = client.chat.completions.create(
             model="groq/compound",
@@ -916,10 +920,24 @@ def live_action_support():
             max_tokens=6000
         )
         result = response.choices[0].message.content.strip()
+
+        # 🔥 FIX: Remove Markdown code fences before parsing JSON
+        if result.startswith("```json"):
+            # Remove the leading "```json\n" and the trailing "\n```" (or just "```")
+            result = result.replace("```json\n", "", 1).strip().rstrip("`")
+        elif result.startswith("```"):
+            # Handle cases where the language tag is missing (e.g., just "```")
+            result = result.replace("```\n", "", 1).strip().rstrip("`")
+        
+        # Ensure only the JSON object remains
+        if result.endswith('```'):
+            result = result.rstrip('`').strip()
+
         parsed_task = json.loads(result)
         print(f"✅ Live action task structure generated from AI")
     except json.JSONDecodeError:
-        return jsonify({"error": "Failed to parse task structure as JSON", "raw_response": result}), 500
+        # Include the cleaned 'result' string for better debugging if the clean failed
+        return jsonify({"error": "Failed to parse task structure as JSON", "raw_response": response.choices[0].message.content.strip(), "cleaned_result": result}), 500
     except Exception as e:
         return jsonify({"error": f"API request failed", "exception": str(e)}), 500
     
@@ -1005,12 +1023,14 @@ def live_action_support():
         task_data["xpReward"] = sum(step.get("xp", 30) for step in formatted_steps)
     
     # ========== STEP 7: Generate Unique Task ID ==========
+    # NOTE: Assuming 'datetime' module is available
     task_id = f"{user_id}_{task_name.lower().replace(' ', '_')}_{int(datetime.now().timestamp())}"
     task_data["id"] = task_id
     task_data["created_at"] = datetime.now().isoformat()
     task_data["user_id"] = user_id
     
     # ========== STEP 8: Save to Firebase ==========
+    # NOTE: Assuming 'db' (Firebase client) is available
     try:
         # Save to user's live action tasks collection
         task_ref = db.collection('users').document(user_id).collection('live_action_tasks').document(task_id)
@@ -2412,6 +2432,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
