@@ -996,7 +996,6 @@ def generate_user_places():
 
 
 
-
 CONVERSATION_STATES = [
     "context",       # Context & Current Life Snapshot
     "habits",        # Habits & Daily Patterns
@@ -1048,18 +1047,8 @@ def chat():
         # Append user message to history
         history.append({"role": "user", "content": user_message})
 
-        # Build messages for AI enforcing current state
-        messages_for_model = [history[0]]  # system prompt
-        messages_for_model += history[1:]  # conversation so far
-        messages_for_model.append({
-            "role": "system",
-            "content": (
-                f"You are an empathetic AI coach. The user is in the '{current_state}' state. "
-                f"Ask questions ONLY relevant to this state. Summarize the user's input in a "
-                f"paragraph format to save as the value for this state. "
-                f"Do NOT skip to the next state until input is received."
-            )
-        })
+        # Send only the conversation history to the AI (last role is user)
+        messages_for_model = history
 
         # Call the AI
         response = client.chat.completions.create(
@@ -1100,6 +1089,7 @@ def chat():
 
     except Exception as e:
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+
 
 
 
@@ -2216,6 +2206,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
