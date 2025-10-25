@@ -1383,58 +1383,84 @@ def reply_day_chat_advanced():
 def generate_user_places():
     if request.method == 'OPTIONS':
         return '', 204  # Handle preflight
-
+    
     data = request.get_json()
     user_id = data.get("user_id")
     goal_name = data.get("goal_name", "").strip()
-
+    
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
-
-    # Fetch condensed profile
+    
+    # Fetch user data including places and profile
     user_doc = db.collection("users").document(user_id).get()
+    
     if not user_doc.exists:
         return jsonify({"error": "User not found or profile not generated yet"}), 404
-
-    condensed_profile = user_doc.to_dict().get("condensed_profile", "")
+    
+    user_data = user_doc.to_dict()
+    
+    # CRITICAL: Fetch the places we extracted
+    current_places = user_data.get("current_places", [])
+    desired_places = user_data.get("desired_places", [])
+    condensed_profile = user_data.get("condensed_profile", "")
+    
     if not condensed_profile:
-        return jsonify({"error": "Condensed profile is empty"}), 404
-
+        return jsonify({"error": "Condensed profile is empty. User needs to chat first."}), 404
+    
+    # Check if user has provided enough information
+    if not current_places and not desired_places:
+        return jsonify({
+            "error": "No places extracted yet. User needs to share more about where they go and want to go."
+        }), 404
+    
     # Load location prompt
     try:
         with open("prompt_location.txt", "r") as f:
             location_prompt_template = f.read()
     except FileNotFoundError:
         return jsonify({"error": "prompt_location.txt not found"}), 500
-
-    # Inject user info into location prompt
+    
+    # Inject user info into location prompt INCLUDING PLACES
     system_prompt = location_prompt_template.format(
         goal_name=goal_name or "their personal goal",
-        condensed_profile=condensed_profile
+        condensed_profile=json.dumps(condensed_profile) if isinstance(condensed_profile, dict) else condensed_profile,
+        user_current_places=", ".join(current_places) if current_places else "none provided",
+        user_desired_places=", ".join(desired_places) if desired_places else "none provided"
     )
-
+    
     messages_for_model = [{"role": "system", "content": system_prompt}]
-
+    
     try:
         response = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=messages_for_model,
-            temperature=0.6,
-            max_tokens=400
+            temperature=0.7,  # Increased for more creative location suggestions
+            max_tokens=1500   # Increased to allow full JSON response with 3 locations
         )
+        
         suggested_places = response.choices[0].message.content.strip()
-
-        # Optionally save suggested places back to user doc
+        
+        # Save suggested places back to user doc
         db.collection("users").document(user_id).set(
-            {"suggested_places": suggested_places},
+            {
+                "suggested_places": suggested_places,
+                "places_generated_at": firestore.SERVER_TIMESTAMP
+            },
             merge=True
         )
-
-        return jsonify({"suggested_places": suggested_places})
-
+        
+        return jsonify({
+            "suggested_places": suggested_places,
+            "used_data": {
+                "current_places": current_places,
+                "desired_places": desired_places
+            }
+        })
+        
     except Exception as e:
+        import traceback
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
-
 
 
 CONVERSATION_STATES = [
@@ -2664,6 +2690,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
