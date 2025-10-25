@@ -1069,6 +1069,119 @@ def determine_difficulty(task_text):
     else:
         return 'Easy'
 
+
+# ============ TASK LIST OVERVIEW ENDPOINT ============
+@app.route('/create-task-overview', methods=['POST'])
+def create_task_overview():
+    """
+    Creates a high-level overview of tasks from Day 1 to Day 5
+    Returns a structured list of all tasks across the 5-day journey
+    """
+    # ========== STEP 1: Parse Request ==========
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    goal_name = data.get("goal_name", "").strip()
+    user_answers = data.get("user_answers", [])
+    user_id = data.get("user_id", "").strip()
+    join_date_str = data.get("join_date")
+    
+    if not goal_name or not isinstance(user_answers, list) or not user_id:
+        return jsonify({"error": "Missing or invalid goal_name, user_answers, or user_id"}), 400
+
+    try:
+        joined_date = datetime.strptime(join_date_str, "%Y-%m-%d") if join_date_str else datetime.now()
+    except:
+        joined_date = datetime.now()
+    
+    course_id = goal_name.lower().replace(" ", "_")
+
+    # Escape user inputs
+    safe_goal_name = json.dumps(goal_name)[1:-1]
+    safe_user_answers = json.dumps(user_answers)
+    
+    api_key = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    if not api_key:
+        return jsonify({"error": "Missing API key in Authorization header"}), 401
+    client.api_key = api_key
+
+    # ========== STEP 2: Load Task Overview Prompt ==========
+    prompt_file = "prompt_task_overview.txt"
+    prompt_template = load_prompt(prompt_file)
+    if not prompt_template:
+        return jsonify({"error": f"{prompt_file} not found"}), 404
+
+    # Insert user inputs
+    prompt = prompt_template.replace("<<goal_name>>", safe_goal_name)
+    prompt = prompt.replace("<<user_answers>>", safe_user_answers)
+
+    # ========== STEP 3: Generate Task Overview from AI ==========
+    try:
+        response = client.chat.completions.create(
+            model="groq/compound",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=4096
+        )
+        result = response.choices[0].message.content.strip()
+    except Exception as e:
+        return jsonify({"error": "API request failed", "exception": str(e)}), 500
+
+    # Extract JSON
+    import re
+    def extract_json(text: str):
+        match = re.search(r'(\{.*\})', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    parsed_overview = extract_json(result)
+    if not parsed_overview:
+        return jsonify({"error": "Failed to parse task overview as valid JSON", "raw_response": result}), 500
+    
+    print("✅ Task overview generated from AI")
+
+    # ========== STEP 4: Structure and Validate Data ==========
+    # Expected structure: {"days": [{"day": 1, "date": "...", "title": "...", "tasks": [...]}, ...]}
+    if "days" not in parsed_overview or not isinstance(parsed_overview["days"], list):
+        return jsonify({"error": "Invalid response structure - missing 'days' array"}), 500
+
+    # Add dates to each day
+    for i, day_data in enumerate(parsed_overview["days"]):
+        day_number = day_data.get("day", i + 1)
+        day_date = (joined_date + timedelta(days=day_number - 1)).strftime("%Y-%m-%d")
+        day_data["date"] = day_date
+
+    # ========== STEP 5: Save to Firebase ==========
+    try:
+        course_ref = get_course_ref(user_id, course_id)
+        
+        # Save as a separate document for quick access
+        task_overview_data = {
+            'goal_name': goal_name,
+            'created_at': datetime.now().isoformat(),
+            'task_overview': parsed_overview,
+            'course_id': course_id
+        }
+        
+        course_ref.set(task_overview_data, merge=True)
+        print("✅ Task overview saved to Firebase")
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to save to Firebase: {str(e)}"}), 500
+
+    # ========== STEP 6: Return Response ==========
+    return jsonify({
+        "success": True,
+        "course_id": course_id,
+        "overview": parsed_overview,
+        "message": "5-day task overview created successfully"
+    })
+
 @app.route('/reply-day-chat-advanced', methods=['POST', 'OPTIONS'])
 def reply_day_chat_advanced():
     if request.method == 'OPTIONS':
@@ -2449,6 +2562,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
