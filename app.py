@@ -1182,24 +1182,39 @@ def create_task_overview():
         "message": "5-day task overview created successfully"
     })
 
+
 @app.route('/reply-day-chat-advanced', methods=['POST', 'OPTIONS'])
 def reply_day_chat_advanced():
     if request.method == 'OPTIONS':
         return '', 204  # Handle preflight
-
+    
     data = request.get_json()
     user_id = data.get("user_id")
     message = data.get("message", "").strip()
     goal_name = data.get("goal_name", "").strip()
-    user_places = data.get("user_places", [])
     user_interests = data.get("user_interests", [])
 
     if not user_id or not message:
         return jsonify({"error": "Missing input"}), 400
 
+    # ----------------------
+    # FETCH EXISTING PLACES FROM FIREBASE
+    # ----------------------
+    user_doc_ref = db.collection("users").document(user_id)
+    user_doc = user_doc_ref.get()
+    
+    existing_current_places = []
+    existing_desired_places = []
+    
+    if user_doc.exists:
+        user_data = user_doc.to_dict()
+        existing_current_places = user_data.get("current_places", [])
+        existing_desired_places = user_data.get("desired_places", [])
+
     # Fetch latest chat for the day
     chats = db.collection("users").document(user_id).collection("custom_day_chat")
     docs = list(chats.order_by("day", direction=firestore.Query.DESCENDING).limit(1).stream())
+    
     if not docs:
         return jsonify({"error": "Chat not started"}), 404
 
@@ -1215,13 +1230,14 @@ def reply_day_chat_advanced():
         with open("prompt_DAYONE_COMPONENTONE.txt", "r") as f:
             chat_prompt_template = f.read()
     except FileNotFoundError:
-        return jsonify({"error": "prompt_DAYONE_COMPONENTONE not found"}), 500
+        return jsonify({"error": "prompt_DAYONE_COMPONENTONE.txt not found"}), 500
 
     # Inject user-specific info into the prompt
     system_prompt = chat_prompt_template.format(
         goal_name=goal_name or "their personal goal",
-        user_places=", ".join(user_places) if user_places else "none",
-        user_interests=", ".join(user_interests) if user_interests else "none"
+        user_places=", ".join(existing_current_places) if existing_current_places else "none",
+        user_interests=", ".join(user_interests) if user_interests else "none",
+        user_desired_places=", ".join(existing_desired_places) if existing_desired_places else "none"
     )
 
     context_message = {"role": "system", "content": system_prompt}
@@ -1242,40 +1258,126 @@ def reply_day_chat_advanced():
         doc_ref.update({"chat": chat_history})
 
         # ----------------------
-        # Generate condensed profile
+        # EXTRACT PLACES using extraction prompt file
         # ----------------------
-        condensed_prompt = f"""
-        You are an assistant that builds a concise user profile.
-        Based on the following conversation, summarize the user's:
-        - Places they visit regularly
-        - Social habits and interactions
-        - Interests and hobbies
-        - Any personality/behavioral cues
-        Only output a structured JSON with keys: places, social_habits, interests, personality.
+        try:
+            with open("prompt_PLACE_EXTRACTION.txt", "r") as f:
+                extraction_prompt_template = f.read()
+        except FileNotFoundError:
+            return jsonify({"error": "prompt_PLACE_EXTRACTION.txt not found"}), 500
 
-        Conversation:
-        {chat_history}
-        """
+        extraction_prompt = extraction_prompt_template.format(
+            user_message=message
+        )
+
+        extraction_response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{"role": "system", "content": extraction_prompt}],
+            temperature=0.2,
+            max_tokens=200
+        )
+        extraction_text = extraction_response.choices[0].message.content.strip()
+
+        # Parse extraction
+        newly_extracted_current = []
+        newly_extracted_desired = []
+        
+        try:
+            # Clean markdown code blocks
+            if "```json" in extraction_text:
+                extraction_text = extraction_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in extraction_text:
+                extraction_text = extraction_text.split("```")[1].split("```")[0].strip()
+            
+            extraction_data = json.loads(extraction_text)
+            newly_extracted_current = extraction_data.get("current_places", [])
+            newly_extracted_desired = extraction_data.get("desired_places", [])
+            
+        except json.JSONDecodeError as e:
+            print(f"Extraction parse error: {e}")
+            print(f"Raw extraction response: {extraction_text}")
+
+        # ----------------------
+        # Merge with existing places (avoid duplicates, case-insensitive)
+        # ----------------------
+        def merge_places(existing, new):
+            existing_lower = [p.lower() for p in existing]
+            merged = existing.copy()
+            for place in new:
+                if place.lower() not in existing_lower:
+                    merged.append(place)
+            return merged
+        
+        updated_current_places = merge_places(existing_current_places, newly_extracted_current)
+        updated_desired_places = merge_places(existing_desired_places, newly_extracted_desired)
+
+        # ----------------------
+        # Generate condensed profile using profile prompt file
+        # ----------------------
+        try:
+            with open("prompt_PROFILE_GENERATION.txt", "r") as f:
+                profile_prompt_template = f.read()
+        except FileNotFoundError:
+            return jsonify({"error": "prompt_PROFILE_GENERATION.txt not found"}), 500
+
+        profile_prompt = profile_prompt_template.format(
+            chat_history=json.dumps(chat_history, indent=2)
+        )
 
         profile_response = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[{"role": "system", "content": condensed_prompt}],
+            messages=[{"role": "system", "content": profile_prompt}],
             temperature=0.3,
             max_tokens=300
         )
+        profile_text = profile_response.choices[0].message.content.strip()
 
-        condensed_profile_text = profile_response.choices[0].message.content.strip()
+        # Parse profile
+        profile_data = {}
+        try:
+            if "```json" in profile_text:
+                profile_text = profile_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in profile_text:
+                profile_text = profile_text.split("```")[1].split("```")[0].strip()
+            
+            profile_data = json.loads(profile_text)
+        except json.JSONDecodeError as e:
+            print(f"Profile parse error: {e}")
+            print(f"Raw profile response: {profile_text}")
+            profile_data = {"social_habits": "", "interests": [], "personality": ""}
 
-        # Save condensed profile
-        db.collection("users").document(user_id).set(
-            {"condensed_profile": condensed_profile_text},
-            merge=True
-        )
-
-        return jsonify({"reply": reply})
+        # ----------------------
+        # Save everything to Firebase
+        # ----------------------
+        user_doc_ref.set({
+            "current_places": updated_current_places,
+            "desired_places": updated_desired_places,
+            "condensed_profile": profile_data,
+            "social_habits": profile_data.get("social_habits", ""),
+            "interests": profile_data.get("interests", []),
+            "personality": profile_data.get("personality", ""),
+            "comfort_level": profile_data.get("comfort_level", ""),
+            "last_updated": firestore.SERVER_TIMESTAMP
+        }, merge=True)
+        
+        return jsonify({
+            "reply": reply,
+            "extracted_this_turn": {
+                "current_places": newly_extracted_current,
+                "desired_places": newly_extracted_desired
+            },
+            "total_places": {
+                "current_places": updated_current_places,
+                "desired_places": updated_desired_places
+            }
+        })
 
     except Exception as e:
+        import traceback
+        print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+
+
 
 @app.route('/generate-user-places', methods=['POST', 'OPTIONS'])
 def generate_user_places():
@@ -2562,6 +2664,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
