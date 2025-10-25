@@ -84,6 +84,110 @@ def read_rewards():
         except json.JSONDecodeError:
             return {}
 
+def safe_format(template, **kwargs):
+    """Safely format template with default values for missing keys"""
+    class SafeDict(defaultdict):
+        def __missing__(self, key):
+            return f"{{{key}}}"
+    
+    safe_dict = SafeDict(str)
+    safe_dict.update(kwargs)
+    return template.format_map(safe_dict)
+
+def normalize_places(places):
+    """Normalize place names to title case to avoid duplicates"""
+    return [place.strip().title() for place in places if place.strip()]
+
+def merge_places(existing, new):
+    """Merge place lists avoiding duplicates (case-insensitive)"""
+    # Normalize both lists
+    normalized_existing = normalize_places(existing)
+    normalized_new = normalize_places(new)
+    
+    # Create a set for case-insensitive comparison
+    existing_lower = {p.lower() for p in normalized_existing}
+    merged = normalized_existing.copy()
+    
+    for place in normalized_new:
+        if place.lower() not in existing_lower:
+            merged.append(place)
+            existing_lower.add(place.lower())
+    
+    return merged
+
+def call_llm_with_retry(messages, temperature=0.6, max_tokens=500, max_retries=3):
+    """Call LLM API with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            response = client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            print(f"API call attempt {attempt + 1} failed: {e}")
+            continue
+    return None
+
+def parse_json_response(text):
+    """Parse JSON from LLM response, handling markdown code blocks"""
+    try:
+        # Remove markdown code blocks
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+        
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"JSON parse error: {e}")
+        print(f"Raw response: {text}")
+        return None
+
+def load_prompt_file(filename, default_content=""):
+    """Load prompt file with fallback"""
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        print(f"Warning: {filename} not found, using default")
+        return default_content
+    except Exception as e:
+        print(f"Error reading {filename}: {e}")
+        return default_content
+
+def truncate_chat_history(chat_history, max_messages=20):
+    """Truncate chat history to prevent token limit issues"""
+    if len(chat_history) <= max_messages:
+        return chat_history
+    
+    # Keep first message (usually intro) and last N messages
+    return [chat_history[0]] + chat_history[-(max_messages-1):]
+
+def create_initial_chat(user_id, goal_name="", user_interests=None):
+    """Create initial chat document for user"""
+    if user_interests is None:
+        user_interests = []
+    
+    initial_message = {
+        "role": "assistant",
+        "content": f"Hi! I'm here to help you with {goal_name if goal_name else 'your goals'}. Tell me about yourself - what places do you like to visit? What are your interests?"
+    }
+    
+    chat_doc = {
+        "day": 1,
+        "chat": [initial_message],
+        "created_at": firestore.SERVER_TIMESTAMP,
+        "goal_name": goal_name,
+        "user_interests": user_interests
+    }
+    
+    return chat_doc
+
 def write_rewards(data):
     with open(REWARD_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -1211,16 +1315,25 @@ def reply_day_chat_advanced():
         existing_current_places = user_data.get("current_places", [])
         existing_desired_places = user_data.get("desired_places", [])
 
-    # Fetch latest chat for the day
+    # ----------------------
+    # FETCH OR CREATE CHAT
+    # ----------------------
     chats = db.collection("users").document(user_id).collection("custom_day_chat")
     docs = list(chats.order_by("day", direction=firestore.Query.DESCENDING).limit(1).stream())
     
     if not docs:
-        return jsonify({"error": "Chat not started"}), 404
-
-    doc_ref = docs[0].reference
-    chat_data = docs[0].to_dict()
-    chat_history = chat_data.get("chat", [])
+        # CREATE NEW CHAT AUTOMATICALLY
+        new_chat_ref = chats.document()
+        new_chat_ref.set({
+            "day": firestore.SERVER_TIMESTAMP,
+            "chat": []
+        })
+        chat_history = []
+        doc_ref = new_chat_ref
+    else:
+        doc_ref = docs[0].reference
+        chat_data = docs[0].to_dict()
+        chat_history = chat_data.get("chat", [])
 
     # Append user message
     chat_history.append({"role": "user", "content": message})
@@ -1240,8 +1353,17 @@ def reply_day_chat_advanced():
         user_desired_places=", ".join(existing_desired_places) if existing_desired_places else "none"
     )
 
-    context_message = {"role": "system", "content": system_prompt}
-    messages_for_model = [chat_history[0]] + [context_message] + chat_history[1:]
+    # Build messages - handle empty chat_history case
+    if len(chat_history) > 1:
+        # If there's prior history, insert system prompt after first message
+        context_message = {"role": "system", "content": system_prompt}
+        messages_for_model = [chat_history[0]] + [context_message] + chat_history[1:]
+    else:
+        # First message - just use system prompt + user message
+        messages_for_model = [
+            {"role": "system", "content": system_prompt},
+            chat_history[0]
+        ]
 
     try:
         # Generate AI chat reply
@@ -1376,6 +1498,7 @@ def reply_day_chat_advanced():
         import traceback
         print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+
 
 
 
@@ -2690,6 +2813,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
