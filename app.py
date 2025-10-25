@@ -1301,6 +1301,21 @@ def reply_day_chat_advanced():
     if not user_id or not message:
         return jsonify({"error": "Missing input"}), 400
 
+    # Get API key from Authorization header
+    api_key = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        api_key = auth_header[len("Bearer "):].strip()
+
+    if not api_key:
+        return jsonify({"error": "Missing API key in Authorization header"}), 401
+
+    # Create a new client instance with the user's API key
+    user_client = OpenAI(
+        base_url="https://api.groq.com/openai/v1",
+        api_key=api_key
+    )
+
     # ----------------------
     # FETCH EXISTING PLACES FROM FIREBASE
     # ----------------------
@@ -1367,7 +1382,7 @@ def reply_day_chat_advanced():
 
     try:
         # Generate AI chat reply
-        response = client.chat.completions.create(
+        response = user_client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=messages_for_model,
             temperature=0.6,
@@ -1392,7 +1407,7 @@ def reply_day_chat_advanced():
             user_message=message
         )
 
-        extraction_response = client.chat.completions.create(
+        extraction_response = user_client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{"role": "system", "content": extraction_prompt}],
             temperature=0.2,
@@ -1446,7 +1461,7 @@ def reply_day_chat_advanced():
             chat_history=json.dumps(chat_history, indent=2)
         )
 
-        profile_response = client.chat.completions.create(
+        profile_response = user_client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=[{"role": "system", "content": profile_prompt}],
             temperature=0.3,
@@ -1500,8 +1515,6 @@ def reply_day_chat_advanced():
         return jsonify({"error": str(e)}), 500
 
 
-
-
 @app.route('/generate-user-places', methods=['POST', 'OPTIONS'])
 def generate_user_places():
     if request.method == 'OPTIONS':
@@ -1513,6 +1526,21 @@ def generate_user_places():
     
     if not user_id:
         return jsonify({"error": "Missing user_id"}), 400
+    
+    # Get API key from Authorization header
+    api_key = None
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        api_key = auth_header[len("Bearer "):].strip()
+
+    if not api_key:
+        return jsonify({"error": "Missing API key in Authorization header"}), 401
+
+    # Create a new client instance with the user's API key
+    user_client = OpenAI(
+        base_url="https://api.groq.com/openai/v1",
+        api_key=api_key
+    )
     
     # Fetch user data including places and profile
     user_doc = db.collection("users").document(user_id).get()
@@ -1554,7 +1582,7 @@ def generate_user_places():
     messages_for_model = [{"role": "system", "content": system_prompt}]
     
     try:
-        response = client.chat.completions.create(
+        response = user_client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
             messages=messages_for_model,
             temperature=0.7,  # Increased for more creative location suggestions
@@ -1584,6 +1612,7 @@ def generate_user_places():
         import traceback
         print(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+        
 
 
 CONVERSATION_STATES = [
@@ -2813,6 +2842,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
