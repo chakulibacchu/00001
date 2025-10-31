@@ -308,6 +308,126 @@ def parse_story_analysis(analysis_text):
         }
 
 
+# ============ MODIFY TASKS WITH LOCATIONS ENDPOINT ============
+@app.route('/modify-tasks-with-locations', methods=['POST'])
+def modify_tasks_with_locations():
+    """
+    Takes existing task overview and modifies tasks to incorporate user's selected locations
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    user_id = data.get("user_id", "").strip()
+    course_id = data.get("course_id", "").strip()
+    
+    if not user_id or not course_id:
+        return jsonify({"error": "Missing user_id or course_id"}), 400
+
+    api_key = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+    if not api_key:
+        return jsonify({"error": "Missing API key in Authorization header"}), 401
+    client.api_key = api_key
+
+    # ========== STEP 1: Load Existing Task Overview ==========
+    try:
+        course_ref = db.collection('users').document(user_id).collection('datedcourses').document(course_id)
+        course_doc = course_ref.get()
+        
+        if not course_doc.exists:
+            return jsonify({"error": "Task overview not found. Please create tasks first."}), 404
+        
+        course_data = course_doc.to_dict()
+        existing_overview = course_data.get('task_overview', {})
+        goal_name = course_data.get('goal_name', '')
+        
+        print(f"✅ Loaded existing task overview with {len(existing_overview.get('days', []))} days")
+    except Exception as e:
+        return jsonify({"error": f"Failed to load task overview: {str(e)}"}), 500
+
+    # ========== STEP 2: Load User's Selected Locations ==========
+    selected_locations = []
+    try:
+        user_doc_ref = db.collection("users").document(user_id)
+        user_doc = user_doc_ref.get()
+        if user_doc.exists:
+            selected_locations = user_doc.to_dict().get("selected_locations", [])
+            print(f"✅ Loaded {len(selected_locations)} locations")
+        
+        if not selected_locations:
+            return jsonify({"error": "No locations found. Please select locations first."}), 404
+            
+    except Exception as e:
+        return jsonify({"error": f"Failed to load locations: {str(e)}"}), 500
+
+    # ========== STEP 3: Load Prompt Template ==========
+    prompt_file = "prompt_modify_tasks_locations.txt"
+    prompt_template = load_prompt(prompt_file)
+    if not prompt_template:
+        return jsonify({"error": f"{prompt_file} not found"}), 404
+
+    # ========== STEP 4: Prepare Data for AI ==========
+    safe_goal_name = json.dumps(goal_name)[1:-1]
+    safe_locations = json.dumps(selected_locations, indent=2)
+    safe_existing_tasks = json.dumps(existing_overview, indent=2)
+
+    prompt = prompt_template.replace("<<goal_name>>", safe_goal_name)
+    prompt = prompt.replace("<<selected_locations>>", safe_locations)
+    prompt = prompt.replace("<<existing_tasks>>", safe_existing_tasks)
+
+    # ========== STEP 5: Generate Modified Tasks from AI ==========
+    try:
+        response = client.chat.completions.create(
+            model="groq/compound",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=6000
+        )
+        result = response.choices[0].message.content.strip()
+    except Exception as e:
+        return jsonify({"error": "API request failed", "exception": str(e)}), 500
+
+    # ========== STEP 6: Extract and Parse JSON ==========
+    import re
+    def extract_json(text: str):
+        match = re.search(r'(\{.*\})', text, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group(1))
+            except json.JSONDecodeError:
+                return None
+        return None
+
+    modified_overview = extract_json(result)
+    if not modified_overview:
+        return jsonify({"error": "Failed to parse modified tasks as valid JSON", "raw_response": result}), 500
+    
+    print("✅ Tasks modified with locations")
+
+    # ========== STEP 7: Validate Structure ==========
+    if "days" not in modified_overview or not isinstance(modified_overview["days"], list):
+        return jsonify({"error": "Invalid response structure - missing 'days' array"}), 500
+
+    # ========== STEP 8: Save Modified Overview to Firebase ==========
+    try:
+        course_ref.update({
+            'task_overview': modified_overview,
+            'locations_integrated': True,
+            'modified_at': datetime.now().isoformat()
+        })
+        print(f"✅ Saved modified task overview to Firebase")
+    except Exception as e:
+        return jsonify({"error": f"Failed to save to Firebase: {str(e)}"}), 500
+
+    # ========== STEP 9: Return Response ==========
+    return jsonify({
+        "success": True,
+        "course_id": course_id,
+        "modified_overview": modified_overview,
+        "locations_used": len(selected_locations),
+        "message": "Tasks successfully modified with selected locations"
+    })
+
 
 
 @app.route('/api/judge-story', methods=['POST', 'OPTIONS'])
@@ -2842,6 +2962,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
