@@ -73,15 +73,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       "tasks": [
         {
           "task_number": 1,
-          "description": "Very easy home-based preparation task with specific steps (5-10 min)"
+          "description": "Very easy home-based preparation task with specific steps (5-10 min)",
+          "done": false
         },
         {
           "task_number": 2,
-          "description": "Slightly more involved preparation with clear actions (10-15 min)"
+          "description": "Slightly more involved preparation with clear actions (10-15 min)",
+          "done": false
         },
         {
           "task_number": 3,
-          "description": "Final preparation or mental rehearsal with specific method (15-20 min)"
+          "description": "Final preparation or mental rehearsal with specific method (15-20 min)",
+          "done": false
         }
       ]
     },
@@ -91,15 +94,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       "tasks": [
         {
           "task_number": 1,
-          "description": "Go to [specific type of place], observe for 15-20 minutes, note what you see"
+          "description": "Go to [specific type of place], observe for 15-20 minutes, note what you see",
+          "done": false
         },
         {
           "task_number": 2,
-          "description": "Make one small, low-risk interaction (e.g., ask a simple question, make a brief comment)"
+          "description": "Make one small, low-risk interaction (e.g., ask a simple question, make a brief comment)",
+          "done": false
         },
         {
           "task_number": 3,
-          "description": "Stay 10 more minutes, attempt one more brief interaction or use a conversation starter"
+          "description": "Stay 10 more minutes, attempt one more brief interaction or use a conversation starter",
+          "done": false
         }
       ]
     },
@@ -109,15 +115,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       "tasks": [
         {
           "task_number": 1,
-          "description": "Return to the place from Day 2, initiate 2-3 short conversations (2-3 min each) using specific openers"
+          "description": "Return to the place from Day 2, initiate 2-3 short conversations (2-3 min each) using specific openers",
+          "done": false
         },
         {
           "task_number": 2,
-          "description": "Have one longer conversation (5-10 minutes) where you ask follow-up questions and actively listen"
+          "description": "Have one longer conversation (5-10 minutes) where you ask follow-up questions and actively listen",
+          "done": false
         },
         {
           "task_number": 3,
-          "description": "Exchange contact info (social media, phone, email) with at least one person you connected with"
+          "description": "Exchange contact info (social media, phone, email) with at least one person you connected with",
+          "done": false
         }
       ]
     },
@@ -127,15 +136,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       "tasks": [
         {
           "task_number": 1,
-          "description": "Follow up with someone from Day 3 OR have a deeper 10+ minute conversation with someone new, sharing more personal details"
+          "description": "Follow up with someone from Day 3 OR have a deeper 10+ minute conversation with someone new, sharing more personal details",
+          "done": false
         },
         {
           "task_number": 2,
-          "description": "Join a group conversation or group activity at the location, contribute meaningfully"
+          "description": "Join a group conversation or group activity at the location, contribute meaningfully",
+          "done": false
         },
         {
           "task_number": 3,
-          "description": "Share something vulnerable or personal (appropriate to context) to create authentic connection"
+          "description": "Share something vulnerable or personal (appropriate to context) to create authentic connection",
+          "done": false
         }
       ]
     },
@@ -145,15 +157,18 @@ STRUCTURE YOUR RESPONSE AS FOLLOWS:
       "tasks": [
         {
           "task_number": 1,
-          "description": "Confidently initiate 3-5 conversations in a challenging social setting, use what you've learned all week"
+          "description": "Confidently initiate 3-5 conversations in a challenging social setting, use what you've learned all week",
+          "done": false
         },
         {
           "task_number": 2,
-          "description": "Take a leadership role: facilitate introductions between people, lead a discussion, or organize something small"
+          "description": "Take a leadership role: facilitate introductions between people, lead a discussion, or organize something small",
+          "done": false
         },
         {
           "task_number": 3,
-          "description": "Complete a significant challenge that demonstrates mastery (e.g., invite 2-3 new connections to do something together, organize a small meetup, give a short presentation/toast, host something)"
+          "description": "Complete a significant challenge that demonstrates mastery (e.g., invite 2-3 new connections to do something together, organize a small meetup, give a short presentation/toast, host something)",
+          "done": false
         }
       ]
     }
@@ -165,6 +180,7 @@ CRITICAL RULES:
 - No explanations, no markdown, no commentary
 - All strings must use double quotes
 - No trailing commas
+- Each task MUST include a "done": false field (this will be updated by users as they complete tasks)
 - Day 1 must be HOME-BASED and EASY (30-45 min total)
 - Day 2 must involve GOING TO A NEW PLACE with minimal interaction
 - Days 3-5 must progressively increase real-world social engagement
