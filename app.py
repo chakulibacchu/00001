@@ -403,90 +403,99 @@ def reflect_analyze():
 @app.route('/reflect-update-tasks', methods=['POST'])
 def reflect_update_tasks():
     """
-    Generate new task overview based on user's weakest social skills.
+    Generate a 5-day task overview based on user's weakest social skills (user_deficiencies).
+    Updates task_overview in an existing datedcourses document.
     """
-    data = request.get_json()
-    if not data:
-        return jsonify({"error": "Invalid JSON payload"}), 400
-
-    user_id = data.get("user_id", "").strip()
-    course_id = data.get("course_id", "").strip()
-    if not user_id or not course_id:
-        return jsonify({"error": "Missing user_id or course_id"}), 400
-
-    api_key = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
-    if not api_key:
-        return jsonify({"error": "Missing API key in Authorization header"}), 401
-    client.api_key = api_key
-
-    # === Step 1: Load Reflection Data ===
-    reflections_ref = db.collection("users").document(user_id).collection("reflections").document(course_id)
-    reflections_doc = reflections_ref.get()
-    if not reflections_doc.exists:
-        return jsonify({"error": "No reflection data found"}), 404
-    reflections_data = reflections_doc.to_dict()
-    skills = reflections_data.get("skills", {})
-
-    if not skills:
-        return jsonify({"error": "No skill data available"}), 400
-
-    # === Step 2: Identify Weakest Skills ===
-    top_skills = sorted(skills, key=skills.get, reverse=True)[:3]
-    safe_skills = json.dumps(top_skills)
-
-    # === Step 3: Load Prompt ===
-    prompt_file = "prompt_reflect_update_tasks.txt"
-    prompt_template = load_prompt(prompt_file)
-    if not prompt_template:
-        return jsonify({"error": f"{prompt_file} not found"}), 404
-
-    prompt = prompt_template.replace("<<skills>>", safe_skills)
-
-    # === Step 4: Call AI ===
     try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Invalid JSON payload"}), 400
+
+        user_id = data.get("user_id", "").strip()
+        course_id = data.get("course_id", "").strip()
+        user_deficiencies = data.get("user_deficiencies", [])
+        if not user_id or not course_id or not user_deficiencies:
+            return jsonify({"error": "Missing user_id, course_id, or user_deficiencies"}), 400
+
+        # API key
+        api_key = request.headers.get("Authorization", "").replace("Bearer ", "").strip()
+        if not api_key:
+            return jsonify({"error": "Missing API key in Authorization header"}), 401
+        client.api_key = api_key
+
+        from datetime import datetime
+        now_iso = datetime.now().isoformat()
+
+        # --- Step 1: Load existing course document ---
+        course_ref = db.collection('users').document(user_id).collection('datedcourses').document(course_id)
+        course_doc = course_ref.get()
+        if not course_doc.exists:
+            return jsonify({"error": "Course document not found. It must exist before calling this endpoint."}), 404
+
+        doc_data = course_doc.to_dict()
+        goal_name = doc_data.get("goal_name", "")
+        created_at = doc_data.get("created_at", "")
+
+        # --- Step 2: Load prompt template ---
+        prompt_file = "prompt_reflect_update_tasks.txt"
+        prompt_template = load_prompt(prompt_file)
+        if not prompt_template:
+            return jsonify({"error": f"{prompt_file} not found"}), 500
+
+        # Replace placeholders
+        safe_deficiencies = json.dumps(user_deficiencies)
+        prompt = prompt_template.replace("<<user_deficiencies>>", safe_deficiencies)
+        prompt = prompt.replace("<<course_id>>", course_id)
+        prompt = prompt.replace("<<created_at>>", created_at)
+        prompt = prompt.replace("<<goal_name>>", goal_name)
+        prompt = prompt.replace("<<user_id>>", user_id)
+
+        # --- Step 3: Call AI ---
         response = client.chat.completions.create(
             model="groq/compound",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
+            temperature=0.7,
             max_tokens=6000
         )
-        result = response.choices[0].message.content.strip()
-    except Exception as e:
-        return jsonify({"error": "AI request failed", "exception": str(e)}), 500
 
-    # === Step 5: Extract JSON ===
-    import re
-    def extract_json(text: str):
-        match = re.search(r'(\{.*\})', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group(1))
-            except json.JSONDecodeError:
-                return None
-        return None
+        ai_output = response.choices[0].message.content.strip()
 
-    plan = extract_json(result)
-    if not plan:
-        return jsonify({"error": "Failed to parse AI plan as valid JSON", "raw_response": result}), 500
+        # --- Step 4: Extract JSON safely ---
+        import re
+        def extract_json(text: str):
+            match = re.search(r'(\{.*\})', text, re.DOTALL)
+            if match:
+                try:
+                    return json.loads(match.group(1))
+                except json.JSONDecodeError:
+                    return None
+            return None
 
-    # === Step 6: Save to Firebase ===
-    try:
-        course_ref = db.collection('users').document(user_id).collection('datedcourses').document(course_id)
+        plan = extract_json(ai_output)
+        if not plan or "task_overview" not in plan or "days" not in plan["task_overview"]:
+            return jsonify({
+                "error": "Failed to parse AI output as valid JSON",
+                "raw_response": ai_output
+            }), 500
+
+        # --- Step 5: Save updated plan ---
         course_ref.update({
-            'task_overview': plan,
-            'reflection_updated': True,
-            'updated_at': datetime.now().isoformat()
+            "task_overview": plan,
+            "reflection_updated": True,
+            "generated_at": now_iso,
+            "updated_at": now_iso
         })
-    except Exception as e:
-        return jsonify({"error": f"Failed to save plan: {str(e)}"}), 500
 
-    return jsonify({
-        "success": True,
-        "user_id": user_id,
-        "course_id": course_id,
-        "plan": plan,
-        "message": "Task overview updated based on reflection data"
-    })
+        return jsonify({
+            "success": True,
+            "user_id": user_id,
+            "course_id": course_id,
+            "plan": plan,
+            "message": "Task overview successfully updated based on user deficiencies"
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 
 # ============ MODIFY TASKS WITH LOCATIONS ENDPOINT ============
@@ -3143,6 +3152,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
