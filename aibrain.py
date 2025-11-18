@@ -4,6 +4,8 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
+CORS(app, resources={r"/*": {"origins": "*"}})  # CORS for all originsg
+
 
 # ========== GROQ CONFIG ==========
 GROQ_API_KEY = "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"
