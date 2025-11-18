@@ -2,10 +2,10 @@ import json
 import requests
 from datetime import datetime
 from flask import Flask, request, jsonify
+from flask_cors import CORS   # <--- FIXED
 
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}})  # CORS for all originsg
-
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ========== GROQ CONFIG ==========
 GROQ_API_KEY = "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"
@@ -48,7 +48,6 @@ def autonomous_agent(user_input=None):
     phase = agent_state["current_phase"]
     response_payload = {}
 
-    # Save user input if any
     if user_input:
         last_question = agent_state.get("last_question", "general question")
         agent_state["user_data"][f"response_{len(agent_state['user_data'])}"] = {
@@ -58,9 +57,7 @@ def autonomous_agent(user_input=None):
         }
         agent_state["conversation_history"].append({"role": "user", "content": user_input})
 
-    # Decide next action based on phase
     if phase == "diagnostic":
-        # Generate next diagnostic question
         prompt = f"""
 You are an empathetic social coach. The user wants to improve social skills.
 User data so far: {json.dumps(agent_state['user_data'], indent=2)}
@@ -71,12 +68,10 @@ Keep it conversational and human-like.
         agent_state["last_question"] = next_question
         response_payload = {"type": "question", "content": next_question}
 
-        # Auto-transition check: if 3+ answers collected, move to next phase
         if len(agent_state["user_data"]) >= 3:
             agent_state["current_phase"] = "conversation_analysis"
 
     elif phase == "conversation_analysis":
-        # Analyze previous responses
         prompt = f"""
 You are a social coach analyzing user responses.
 User responses: {json.dumps(agent_state['user_data'], indent=2)}
@@ -113,15 +108,12 @@ Keep it practical and achievable.
 
     return response_payload
 
-# ========== SINGLE ENDPOINT ==========
+# ========== ENDPOINT ==========
 @app.route("/agent", methods=["POST"])
 def agent_endpoint():
     data = request.json or {}
-    user_input = data.get("answer")  # may be None for first call
+    user_input = data.get("answer")
     response = autonomous_agent(user_input)
     return jsonify(response)
 
-# ========== RUN SERVER ==========
-if __name__ == "__main__":
-    print("Autonomous Social Coach Agent starting...")
-    app.run(host="0.0.0.0", port=5000)
+# ❌ DO NOT ADD app.run() — Render handles it
