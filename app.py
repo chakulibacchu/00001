@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 import time
 import requests
 
-
 load_dotenv()
 
 app = Flask(__name__)
@@ -311,13 +310,8 @@ def parse_story_analysis(analysis_text):
 
 
 
-import requests
-import json
-from datetime import datetime
-from flask import Flask, request, jsonify
 
-# Assuming you have an existing Flask app instance:
-app = Flask(__name__) # Needed for the @app.route decorator
+
 
 # ========== GROQ CONFIG (Remove API Key) ==========
 # The API key is REMOVED from the global scope and will be passed per-request.
@@ -3296,6 +3290,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
