@@ -311,14 +311,19 @@ def parse_story_analysis(analysis_text):
 
 
 
-# ========== GROQ CONFIG ==========
-GROQ_API_KEY12 = "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"
+import requests
+import json
+from datetime import datetime
+from flask import Flask, request, jsonify
+
+# Assuming you have an existing Flask app instance:
+app = Flask(__name__) # Needed for the @app.route decorator
+
+# ========== GROQ CONFIG (Remove API Key) ==========
+# The API key is REMOVED from the global scope and will be passed per-request.
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.3-70b-versatile"
-HEADERS = {
-    "Content-Type": "application/json",
-    "Authorization": f"Bearer {GROQ_API_KEY12}"
-}
+# HEADERS are now generated inside ai_query with the passed key
 
 # ========== AGENT STATE ==========
 agent_state = {
@@ -329,8 +334,16 @@ agent_state = {
     "memory": {}
 }
 
-# ========== AI QUERY HELPER ==========
-def ai_query(prompt, system_msg="You are a helpful assistant.", max_tokens=500):
+# ========== AI QUERY HELPER (Accepts api_key argument) ==========
+def ai_query(prompt, api_key, system_msg="You are a helpful assistant.", max_tokens=500):
+    """Queries the Groq API, using the API key provided in the function call."""
+    
+    # Headers are now constructed dynamically using the passed api_key
+    HEADERS = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
     payload = {
         "model": MODEL,
         "messages": [
@@ -341,14 +354,22 @@ def ai_query(prompt, system_msg="You are a helpful assistant.", max_tokens=500):
         "temperature": 0.7
     }
     try:
+        # Use the dynamically created HEADERS
         response = requests.post(API_URL, headers=HEADERS, json=payload)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
+        # NOTE: Handle 'e' carefully to avoid leaking API key context in a real app
         return f"Error: {e}"
 
-# ========== AUTO-PHASE AGENT LOGIC ==========
-def autonomous_agent(user_input=None):
+# ========== AUTO-PHASE AGENT LOGIC (Accepts api_key argument) ==========
+def autonomous_agent(user_input=None, api_key=None):
+    """Main agent logic, now requires the API key to call ai_query."""
+    
+    # CRITICAL: Check for the API key before proceeding
+    if not api_key:
+        return {"type": "error", "content": "API Key not provided in the request."}
+
     phase = agent_state["current_phase"]
     response_payload = {}
 
@@ -361,6 +382,8 @@ def autonomous_agent(user_input=None):
         }
         agent_state["conversation_history"].append({"role": "user", "content": user_input})
 
+    # --- Phase Logic (Call ai_query with the api_key) ---
+    
     if phase == "diagnostic":
         prompt = f"""
 You are an empathetic social coach. The user wants to improve social skills.
@@ -368,7 +391,8 @@ User data so far: {json.dumps(agent_state['user_data'], indent=2)}
 Ask ONE question to learn more about the user's social habits. Include one supportive, motivating sentence.
 Keep it conversational and human-like.
 """
-        next_question = ai_query(prompt, "You are an empathetic social coach.", max_tokens=150)
+        # PASS THE API KEY HERE
+        next_question = ai_query(prompt, api_key, "You are an empathetic social coach.", max_tokens=150)
         agent_state["last_question"] = next_question
         response_payload = {"type": "question", "content": next_question}
 
@@ -381,9 +405,9 @@ You are a social coach analyzing user responses.
 User responses: {json.dumps(agent_state['user_data'], indent=2)}
 Give 1 short insight or key takeaway that will help the user improve socially. 2-3 sentences max.
 """
-        insight = ai_query(prompt, "You are a social coach.", max_tokens=150)
+        # PASS THE API KEY HERE
+        insight = ai_query(prompt, api_key, "You are a social coach.", max_tokens=150)
         response_payload = {"type": "insight", "content": insight}
-
         agent_state["current_phase"] = "goal_setting"
 
     elif phase == "goal_setting":
@@ -391,7 +415,8 @@ Give 1 short insight or key takeaway that will help the user improve socially. 2
 Based on user responses: {json.dumps(agent_state['user_data'], indent=2)}
 Create 3 specific, measurable goals for the user over the next 5 days. Keep it clear and actionable.
 """
-        goals = ai_query(prompt, "You are a goal-setting coach.", max_tokens=300)
+        # PASS THE API KEY HERE
+        goals = ai_query(prompt, api_key, "You are a goal-setting coach.", max_tokens=300)
         agent_state["memory"]["goals"] = goals
         response_payload = {"type": "goals", "content": goals}
         agent_state["current_phase"] = "action_planning"
@@ -402,7 +427,8 @@ User profile and goals: {json.dumps(agent_state, indent=2)}
 Create a detailed 5-day action plan. Each day should have one task, why it matters, and how to do it.
 Keep it practical and achievable.
 """
-        plan = ai_query(prompt, "You are an implementation coach.", max_tokens=800)
+        # PASS THE API KEY HERE
+        plan = ai_query(prompt, api_key, "You are an implementation coach.", max_tokens=800)
         agent_state["memory"]["action_plan"] = plan
         response_payload = {"type": "action_plan", "content": plan}
         agent_state["current_phase"] = "complete"
@@ -412,12 +438,16 @@ Keep it practical and achievable.
 
     return response_payload
 
-# ========== ENDPOINT ==========
+# ========== ENDPOINT (Extracts and passes the API Key) ==========
 @app.route("/agent", methods=["POST"])
 def agent_endpoint():
     data = request.json or {}
+    # 1. Extract the API key from the incoming JSON data
+    groq_api_key = data.get("groq_api_key") 
     user_input = data.get("answer")
-    response = autonomous_agent(user_input)
+    
+    # 2. Pass both user_input and the groq_api_key to the autonomous_agent
+    response = autonomous_agent(user_input, groq_api_key)
     return jsonify(response)
 
 # ❌ DO NOT ADD app.run() — Render handles it
@@ -3266,6 +3296,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
