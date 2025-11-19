@@ -11,6 +11,7 @@ import re
 from datetime import datetime, timedelta
 import time
 import requests
+from firebase_admin import credentials, firestore
 
 load_dotenv()
 
@@ -313,11 +314,9 @@ def parse_story_analysis(analysis_text):
 
 
 
-# ========== GROQ CONFIG (Remove API Key) ==========
-# The API key is REMOVED from the global scope and will be passed per-request.
+# ========== GROQ CONFIG ==========
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.3-70b-versatile"
-# HEADERS are now generated inside ai_query with the passed key
 
 # ========== AGENT STATE ==========
 agent_state = {
@@ -325,14 +324,15 @@ agent_state = {
     "user_data": {},
     "conversation_history": [],
     "tasks_completed": [],
-    "memory": {}
+    "memory": {},
+    "user_id": None,
+    "question_count": 0
 }
 
-# ========== AI QUERY HELPER (Accepts api_key argument) ==========
+# ========== AI QUERY HELPER ==========
 def ai_query(prompt, api_key, system_msg="You are a helpful assistant.", max_tokens=500):
     """Queries the Groq API, using the API key provided in the function call."""
     
-    # Headers are now constructed dynamically using the passed api_key
     HEADERS = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}"
@@ -348,104 +348,366 @@ def ai_query(prompt, api_key, system_msg="You are a helpful assistant.", max_tok
         "temperature": 0.7
     }
     try:
-        # Use the dynamically created HEADERS
         response = requests.post(API_URL, headers=HEADERS, json=payload)
         response.raise_for_status()
         return response.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        # NOTE: Handle 'e' carefully to avoid leaking API key context in a real app
         return f"Error: {e}"
 
-# ========== AUTO-PHASE AGENT LOGIC (Accepts api_key argument) ==========
-def autonomous_agent(user_input=None, api_key=None):
-    """Main agent logic, now requires the API key to call ai_query."""
+# ========== FIREBASE UPDATE HELPER ==========
+def update_firebase_task_plan(user_id, ai_generated_plan):
+    """
+    Updates the Firebase document with the new AI-generated task plan.
+    Parses the AI plan and structures it according to Firebase schema.
+    """
+    try:
+        # Reference to the document
+        doc_ref = db.collection('users').document(user_id).collection('datedCourses').document('social_skills')
+        
+        # Parse the AI-generated plan into structured format
+        structured_days = parse_ai_plan_to_firebase_format(ai_generated_plan)
+        
+        # Get current date for date assignments
+        current_date = datetime.now()
+        
+        # Structure the days array
+        days_array = []
+        for i, day_data in enumerate(structured_days, 1):
+            day_date = (current_date + timedelta(days=i-1)).strftime("%Y-%m-%d")
+            day_obj = {
+                "date": day_date,
+                "day": i,
+                "title": day_data["title"],
+                "tasks": day_data["tasks"]
+            }
+            days_array.append(day_obj)
+        
+        # Update the document
+        doc_ref.update({
+            "task_overview.days": days_array,
+            "generated_at": firestore.SERVER_TIMESTAMP,
+            "status": "active"
+        })
+        
+        return {"success": True, "message": "Task plan updated successfully in Firebase"}
     
-    # CRITICAL: Check for the API key before proceeding
+    except Exception as e:
+        return {"success": False, "message": f"Firebase update error: {str(e)}"}
+
+# ========== AI PLAN PARSER ==========
+def parse_ai_plan_to_firebase_format(ai_plan):
+    """
+    Parses the AI-generated text plan into Firebase-compatible structure.
+    Handles both JSON and text formats.
+    """
+    try:
+        # Try to extract JSON if it's wrapped in code blocks
+        if "```json" in ai_plan:
+            json_start = ai_plan.find("```json") + 7
+            json_end = ai_plan.find("```", json_start)
+            ai_plan = ai_plan[json_start:json_end].strip()
+        elif "```" in ai_plan:
+            json_start = ai_plan.find("```") + 3
+            json_end = ai_plan.find("```", json_start)
+            ai_plan = ai_plan[json_start:json_end].strip()
+        
+        # Try to parse as JSON
+        if ai_plan.strip().startswith('[') or ai_plan.strip().startswith('{'):
+            parsed = json.loads(ai_plan)
+            # If it's a dict with a days key, extract that
+            if isinstance(parsed, dict) and "days" in parsed:
+                return parsed["days"]
+            return parsed if isinstance(parsed, list) else [parsed]
+        
+        # Fallback: text parsing
+        days = []
+        current_day = None
+        
+        lines = ai_plan.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('Day ') or line.startswith('**Day '):
+                if current_day:
+                    days.append(current_day)
+                current_day = {"title": "", "tasks": []}
+                # Extract title from same line if present
+                if ':' in line:
+                    current_day["title"] = line.split(':', 1)[1].strip()
+            elif current_day is not None and line and not line.startswith('#'):
+                # Parse tasks (look for numbered items or bullets)
+                if line[0].isdigit() or line.startswith('-') or line.startswith('•'):
+                    task_text = line.lstrip('0123456789.-•) ').strip()
+                    if task_text:
+                        task = {
+                            "task_number": len(current_day["tasks"]) + 1,
+                            "description": task_text
+                        }
+                        current_day["tasks"].append(task)
+        
+        if current_day:
+            days.append(current_day)
+        
+        return days if days else []
+    
+    except Exception as e:
+        print(f"Parse error: {e}")
+        return []
+
+# ========== AUTO-PHASE AGENT LOGIC ==========
+def autonomous_agent(user_input=None, api_key=None, user_id=None):
+    """Main agent logic with Firebase integration and enhanced prompts."""
+    
     if not api_key:
-        return {"type": "error", "content": "API Key not provided in the request."}
+        return {"type": "error", "content": "API Key not provided in the request.", "phase": "error"}
+    
+    if not user_id:
+        return {"type": "error", "content": "User ID not provided in the request.", "phase": "error"}
+    
+    # Store user_id in agent state
+    agent_state["user_id"] = user_id
 
     phase = agent_state["current_phase"]
     response_payload = {}
 
+    # Store user input if provided
     if user_input:
+        agent_state["question_count"] += 1
         last_question = agent_state.get("last_question", "general question")
-        agent_state["user_data"][f"response_{len(agent_state['user_data'])}"] = {
+        agent_state["user_data"][f"response_{agent_state['question_count']}"] = {
             "question": last_question,
             "answer": user_input,
             "timestamp": datetime.now().isoformat()
         }
         agent_state["conversation_history"].append({"role": "user", "content": user_input})
 
-    # --- Phase Logic (Call ai_query with the api_key) ---
+    # --- PHASE LOGIC ---
     
     if phase == "diagnostic":
-        prompt = f"""
-You are an empathetic social coach. The user wants to improve social skills.
-User data so far: {json.dumps(agent_state['user_data'], indent=2)}
-Ask ONE question to learn more about the user's social habits. Include one supportive, motivating sentence.
-Keep it conversational and human-like.
-"""
-        # PASS THE API KEY HERE
-        next_question = ai_query(prompt, api_key, "You are an empathetic social coach.", max_tokens=150)
-        agent_state["last_question"] = next_question
-        response_payload = {"type": "question", "content": next_question}
+        # Enhanced diagnostic prompts with progressive depth
+        question_prompts = [
+            """You are a warm, empathetic social skills coach named Alex. This is your first interaction with the user.
 
-        if len(agent_state["user_data"]) >= 3:
+Context: The user wants to improve their social skills. Start by understanding their current situation.
+
+Ask ONE specific question to understand:
+- Their biggest challenge in social situations (first question)
+- A recent social situation they found difficult (second question)  
+- What they wish they could do differently socially (third question)
+
+Requirements:
+- Ask only the question appropriate for this stage (question {count} of 3)
+- Be conversational and encouraging
+- Show genuine interest
+- Keep it under 40 words
+- End with the question, no extra explanations""",
+            
+            """Based on the user's previous response: "{prev_response}"
+
+You're building deeper understanding. Ask ONE follow-up question that:
+- Digs into the specifics of their social challenge
+- Helps identify patterns in their social interactions
+- Explores what triggers their social discomfort
+
+Keep it supportive and under 40 words.""",
+            
+            """Previous responses show: {summary}
+
+Ask ONE final diagnostic question that:
+- Identifies what success would look like for them
+- Uncovers their motivation for improvement
+- Reveals their preferred learning style (practice vs theory, solo vs group)
+
+Be encouraging and concise (under 40 words)."""
+        ]
+        
+        # Select prompt based on question count
+        q_num = min(agent_state["question_count"], 2)
+        base_prompt = question_prompts[q_num]
+        
+        # Build context
+        prev_response = ""
+        summary = ""
+        if agent_state["user_data"]:
+            last_key = list(agent_state["user_data"].keys())[-1]
+            prev_response = agent_state["user_data"][last_key]["answer"]
+            summary = " | ".join([f"Q: {v['question'][:50]} A: {v['answer'][:50]}" 
+                                 for v in agent_state["user_data"].values()])
+        
+        prompt = base_prompt.format(
+            count=agent_state["question_count"] + 1,
+            prev_response=prev_response,
+            summary=summary
+        )
+        
+        system_msg = "You are Alex, an empathetic social skills coach. Be warm, concise, and ask insightful questions."
+        next_question = ai_query(prompt, api_key, system_msg, max_tokens=100)
+        
+        agent_state["last_question"] = next_question
+        response_payload = {
+            "type": "question",
+            "content": next_question,
+            "phase": "diagnostic",
+            "progress": f"{agent_state['question_count']}/3"
+        }
+
+        # Move to next phase after 3 questions
+        if agent_state["question_count"] >= 3:
             agent_state["current_phase"] = "conversation_analysis"
 
     elif phase == "conversation_analysis":
-        prompt = f"""
-You are a social coach analyzing user responses.
-User responses: {json.dumps(agent_state['user_data'], indent=2)}
-Give 1 short insight or key takeaway that will help the user improve socially. 2-3 sentences max.
-"""
-        # PASS THE API KEY HERE
-        insight = ai_query(prompt, api_key, "You are a social coach.", max_tokens=150)
-        response_payload = {"type": "insight", "content": insight}
+        prompt = f"""You are analyzing a user's social skills diagnostic session.
+
+User's responses:
+{json.dumps(agent_state['user_data'], indent=2)}
+
+Provide a brief, personalized analysis (3-4 sentences) that:
+1. Identifies ONE core pattern or challenge in their social interactions
+2. Highlights ONE existing strength they can build on
+3. Offers ONE specific, actionable insight they can apply immediately
+
+Be specific, reference their actual responses, and be encouraging. Avoid generic advice."""
+
+        system_msg = "You are a perceptive social skills analyst. Be specific, personal, and constructive."
+        insight = ai_query(prompt, api_key, system_msg, max_tokens=200)
+        
+        response_payload = {
+            "type": "insight",
+            "content": insight,
+            "phase": "conversation_analysis"
+        }
         agent_state["current_phase"] = "goal_setting"
 
     elif phase == "goal_setting":
-        prompt = f"""
-Based on user responses: {json.dumps(agent_state['user_data'], indent=2)}
-Create 3 specific, measurable goals for the user over the next 5 days. Keep it clear and actionable.
-"""
-        # PASS THE API KEY HERE
-        goals = ai_query(prompt, api_key, "You are a goal-setting coach.", max_tokens=300)
+        prompt = f"""Based on this diagnostic session:
+
+{json.dumps(agent_state['user_data'], indent=2)}
+
+Create 3 SMART goals for the user to achieve over the next 5 days:
+
+Requirements for each goal:
+- Specific and measurable (user should know when they've achieved it)
+- Directly addresses their stated challenges
+- Builds progressively (Goal 1 → Goal 2 → Goal 3 increases in difficulty)
+- Realistic for a 5-day timeframe
+- Focused on observable behaviors, not feelings
+
+Format:
+**Goal 1**: [Specific, measurable goal]
+**Goal 2**: [Specific, measurable goal]  
+**Goal 3**: [Specific, measurable goal]
+
+Make these personal to their situation, not generic."""
+
+        system_msg = "You are a goal-setting expert. Create specific, measurable, achievable goals."
+        goals = ai_query(prompt, api_key, system_msg, max_tokens=300)
+        
         agent_state["memory"]["goals"] = goals
-        response_payload = {"type": "goals", "content": goals}
+        response_payload = {
+            "type": "goals",
+            "content": goals,
+            "phase": "goal_setting"
+        }
         agent_state["current_phase"] = "action_planning"
 
     elif phase == "action_planning":
-        prompt = f"""
-User profile and goals: {json.dumps(agent_state, indent=2)}
-Create a detailed 5-day action plan. Each day should have one task, why it matters, and how to do it.
-Keep it practical and achievable.
-"""
-        # PASS THE API KEY HERE
-        plan = ai_query(prompt, api_key, "You are an implementation coach.", max_tokens=800)
+        prompt = f"""You are creating a personalized 5-day social skills improvement plan.
+
+USER PROFILE:
+{json.dumps(agent_state['user_data'], indent=2)}
+
+GOALS:
+{agent_state['memory'].get('goals', 'Not set')}
+
+Create a 5-day action plan with progressive difficulty. Each day should build on the previous day.
+
+CRITICAL: Return ONLY valid JSON in this exact format (no additional text):
+
+[
+  {{
+    "title": "Day 1: Foundation Building",
+    "tasks": [
+      {{"task_number": 1, "description": "Specific action with clear outcome"}},
+      {{"task_number": 2, "description": "Specific action with clear outcome"}},
+      {{"task_number": 3, "description": "Specific action with clear outcome"}}
+    ]
+  }},
+  {{
+    "title": "Day 2: [Theme]",
+    "tasks": [
+      {{"task_number": 1, "description": "..."}},
+      {{"task_number": 2, "description": "..."}},
+      {{"task_number": 3, "description": "..."}}
+    ]
+  }},
+  ... (continue for days 3, 4, 5)
+]
+
+Requirements:
+- Day 1: Low-risk, confidence-building activities (observation, preparation)
+- Day 2-3: Moderate challenge with real interactions
+- Day 4-5: Stretch goals that push their boundaries
+- Each task must be: specific, actionable, completable in 15-30 minutes
+- Tasks should directly address their stated challenges
+- Include a mix of: mental exercises, real-world practice, reflection
+- No generic advice - personalize based on their responses
+
+Return ONLY the JSON array, no explanations."""
+
+        system_msg = "You are an expert at creating progressive, personalized action plans. Return only valid JSON."
+        plan = ai_query(prompt, api_key, system_msg, max_tokens=2000)
+        
         agent_state["memory"]["action_plan"] = plan
-        response_payload = {"type": "action_plan", "content": plan}
+        
+        # ========== UPDATE FIREBASE ==========
+        firebase_result = update_firebase_task_plan(user_id, plan)
+        
+        if firebase_result["success"]:
+            response_payload = {
+                "type": "action_plan",
+                "content": plan,
+                "phase": "action_planning",
+                "firebase_status": "success",
+                "message": "🎉 Your personalized 5-day plan has been created and saved!",
+                "next_steps": "Your plan is now ready. Start with Day 1 tomorrow!"
+            }
+        else:
+            response_payload = {
+                "type": "action_plan",
+                "content": plan,
+                "phase": "action_planning", 
+                "firebase_status": "error",
+                "message": f"Plan created but couldn't save: {firebase_result['message']}"
+            }
+        
         agent_state["current_phase"] = "complete"
 
     elif phase == "complete":
-        response_payload = {"type": "complete", "content": "All phases complete. Your plan is ready!"}
+        response_payload = {
+            "type": "completion",
+            "phase": "complete",
+            "status": "finished",
+            "message": "✅ All phases complete! Your personalized social skills plan is ready to go.",
+            "summary": {
+                "questions_answered": agent_state["question_count"],
+                "goals_set": 3,
+                "days_planned": 5,
+                "total_tasks": 15
+            },
+            "action_required": False
+        }
 
     return response_payload
 
-# ========== ENDPOINT (Extracts and passes the API Key) ==========
+# ========== ENDPOINT ==========
 @app.route("/agent", methods=["POST"])
 def agent_endpoint():
     data = request.json or {}
-    # 1. Extract the API key from the incoming JSON data
-    groq_api_key = data.get("groq_api_key") 
+    groq_api_key = data.get("groq_api_key")
+    user_id = data.get("user_id")
     user_input = data.get("answer")
     
-    # 2. Pass both user_input and the groq_api_key to the autonomous_agent
-    response = autonomous_agent(user_input, groq_api_key)
+    response = autonomous_agent(user_input, groq_api_key, user_id)
     return jsonify(response)
-
-# ❌ DO NOT ADD app.run() — Render handles it
-
 
 @app.route('/reflect-analyze', methods=['POST'])
 def reflect_analyze():
@@ -3290,6 +3552,7 @@ def complete_task():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
